@@ -3,8 +3,5 @@
   "identifier": "main-capability",
   "description": "TokenStack main window permissions",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "sql:default"
-  ]
+  "permissions": ["core:default"]
 }

@@ -17,7 +17,7 @@ import {
   Sun,
   Zap,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -32,17 +32,68 @@ import { cn } from "../../lib/utils";
 type Theme = "dark" | "light";
 
 const metricIcons = [Activity, CalendarDays, BarChart3, Zap, RefreshCcw];
+const AUTO_REFRESH_BASE_DELAY_MS = 60_000;
+const AUTO_REFRESH_MAX_DELAY_MS = 300_000;
 
 export function CommandCenterShell() {
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("tokenstack-theme") as Theme | null) ?? "dark");
   const [dataMode, setDataMode] = useState<DataMode>("combined");
+  const [autoRefreshDelayMs, setAutoRefreshDelayMs] = useState(AUTO_REFRESH_BASE_DELAY_MS);
   const query = useDashboardSummary(dataMode);
   const refresh = useRefreshAll(dataMode);
+  const refreshPendingRef = useRef(false);
+  const refreshMutationRef = useRef(refresh.mutateAsync);
+  const handleDataModeChange = (mode: DataMode) => {
+    setAutoRefreshDelayMs(AUTO_REFRESH_BASE_DELAY_MS);
+    setDataMode(mode);
+  };
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("tokenstack-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    refreshPendingRef.current = refresh.isPending;
+    refreshMutationRef.current = refresh.mutateAsync;
+  }, [refresh.isPending, refresh.mutateAsync]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let nextDelay = AUTO_REFRESH_BASE_DELAY_MS;
+    let timer: number | undefined;
+
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(async () => {
+        if (cancelled) {
+          return;
+        }
+        if (refreshPendingRef.current) {
+          schedule(nextDelay);
+          return;
+        }
+        try {
+          await refreshMutationRef.current();
+          nextDelay = AUTO_REFRESH_BASE_DELAY_MS;
+        } catch {
+          nextDelay = Math.min(nextDelay * 2, AUTO_REFRESH_MAX_DELAY_MS);
+        }
+        if (!cancelled) {
+          setAutoRefreshDelayMs(nextDelay);
+          schedule(nextDelay);
+        }
+      }, delay);
+    };
+
+    schedule(AUTO_REFRESH_BASE_DELAY_MS);
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [dataMode]);
 
   const summary = query.data;
 
@@ -50,11 +101,11 @@ export function CommandCenterShell() {
     <TooltipProvider delayDuration={150}>
       <div className="min-h-screen bg-background text-foreground">
         <div className="grid min-h-screen grid-cols-[196px_minmax(0,1fr)] grid-rows-[1fr_auto] max-[980px]:grid-cols-1">
-          <Sidebar dataMode={dataMode} setDataMode={setDataMode} />
+          <Sidebar dataMode={dataMode} setDataMode={handleDataModeChange} autoRefreshDelayMs={autoRefreshDelayMs} />
           <main className="min-w-0 px-6 py-6 max-[980px]:px-4">
             <DashboardHeader
               dataMode={dataMode}
-              setDataMode={setDataMode}
+              setDataMode={handleDataModeChange}
               theme={theme}
               setTheme={setTheme}
               lastRefresh={summary?.lastRefreshLabel ?? "not yet"}
@@ -70,7 +121,15 @@ export function CommandCenterShell() {
   );
 }
 
-function Sidebar({ dataMode, setDataMode }: { dataMode: DataMode; setDataMode: (mode: DataMode) => void }) {
+function Sidebar({
+  dataMode,
+  setDataMode,
+  autoRefreshDelayMs,
+}: {
+  dataMode: DataMode;
+  setDataMode: (mode: DataMode) => void;
+  autoRefreshDelayMs: number;
+}) {
   return (
     <aside className="row-span-2 border-r border-border bg-sidebar p-3 max-[980px]:hidden" aria-label="Primary">
       <div className="mb-6 flex h-12 items-center gap-3 px-2">
@@ -117,7 +176,7 @@ function Sidebar({ dataMode, setDataMode }: { dataMode: DataMode; setDataMode: (
         <div className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">
           <div className="flex items-center justify-between">
             <span>Auto refresh</span>
-            <span className="inline-flex items-center gap-1">60s <ChevronDown size={13} aria-hidden /></span>
+            <span className="inline-flex items-center gap-1">{Math.round(autoRefreshDelayMs / 1000)}s <ChevronDown size={13} aria-hidden /></span>
           </div>
         </div>
         <div className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">

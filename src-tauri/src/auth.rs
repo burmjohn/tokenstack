@@ -23,6 +23,7 @@ pub struct AuthMetadata {
 #[derive(Debug, Clone)]
 pub struct AuthHandle {
     token: SecretString,
+    #[allow(dead_code)]
     metadata: AuthMetadata,
 }
 
@@ -38,6 +39,7 @@ impl AuthHandle {
         }
     }
 
+    #[allow(dead_code)]
     pub fn metadata(&self) -> &AuthMetadata {
         &self.metadata
     }
@@ -58,16 +60,20 @@ impl AuthLocator {
     }
 
     pub fn allowed_path(&self, candidate: &Path) -> Result<PathBuf, AuthError> {
-        let allowed = [
-            self.home.join(".codex").join("auth.json"),
-            self.home.join(".config").join("codex").join("auth.json"),
-        ];
+        let allowed = self.candidate_paths();
         let normalized = candidate.components().collect::<PathBuf>();
         if allowed.iter().any(|path| path == &normalized) {
             Ok(normalized)
         } else {
             Err(AuthError::PathDenied)
         }
+    }
+
+    pub fn candidate_paths(&self) -> [PathBuf; 2] {
+        [
+            self.home.join(".codex").join("auth.json"),
+            self.home.join(".config").join("codex").join("auth.json"),
+        ]
     }
 }
 

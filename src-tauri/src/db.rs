@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub const MIGRATIONS: &[&str] = &[r#"
@@ -155,6 +156,7 @@ pub struct ImportRunSummary {
     pub warnings: Vec<String>,
 }
 
+#[allow(dead_code)]
 pub fn open_memory() -> rusqlite::Result<Connection> {
     let conn = Connection::open_in_memory()?;
     run_migrations(&conn)?;
@@ -231,10 +233,12 @@ pub fn insert_usage_event(conn: &Connection, event: &UsageEvent) -> rusqlite::Re
     Ok(changed == 1)
 }
 
+#[allow(dead_code)]
 pub fn count_usage_events(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM usage_events", [], |row| row.get(0))
 }
 
+#[allow(dead_code)]
 pub fn usage_total(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row(
         "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events",
@@ -243,6 +247,7 @@ pub fn usage_total(conn: &Connection) -> rusqlite::Result<i64> {
     )
 }
 
+#[allow(dead_code)]
 pub fn usage_event_by_uid(
     conn: &Connection,
     event_uid: &str,
@@ -333,6 +338,115 @@ pub fn record_source_coverage(
     Ok(())
 }
 
+pub fn insert_connector_run(
+    conn: &Connection,
+    connector_id: &str,
+    status: &str,
+    endpoint_id: Option<&str>,
+    http_status: Option<i64>,
+    redacted_error_code: Option<&str>,
+    redacted_error_message: Option<&str>,
+) -> rusqlite::Result<i64> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        r#"
+        INSERT INTO connector_runs
+          (connector_id, started_at_utc, completed_at_utc, status, endpoint_id, http_status,
+           redacted_error_code, redacted_error_message)
+        VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            connector_id,
+            now,
+            status,
+            endpoint_id,
+            http_status,
+            redacted_error_code,
+            redacted_error_message
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn insert_reset_credit_batch(
+    conn: &Connection,
+    connector_run_id: i64,
+    credit_count: i64,
+    expires_at_utc: DateTime<Utc>,
+    source_connector_id: &str,
+    confidence: &str,
+) -> rusqlite::Result<()> {
+    let captured_at_utc = Utc::now().to_rfc3339();
+    let raw_batch_hash = hash_reset_batch(credit_count, expires_at_utc, source_connector_id);
+    conn.execute(
+        r#"
+        INSERT INTO reset_credit_batches
+          (connector_run_id, captured_at_utc, credit_count, expires_at_utc,
+           source_connector_id, confidence, raw_batch_hash)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            connector_run_id,
+            captured_at_utc,
+            credit_count,
+            expires_at_utc.to_rfc3339(),
+            source_connector_id,
+            confidence,
+            raw_batch_hash
+        ],
+    )?;
+    Ok(())
+}
+
+pub struct NewRateLimitWindow<'a> {
+    pub connector_run_id: i64,
+    pub window_key: &'a str,
+    pub limit_tokens: i64,
+    pub used_tokens: i64,
+    pub remaining_tokens: i64,
+    pub resets_at_utc: DateTime<Utc>,
+    pub confidence: &'a str,
+}
+
+pub fn insert_rate_limit_window(
+    conn: &Connection,
+    window: &NewRateLimitWindow<'_>,
+) -> rusqlite::Result<()> {
+    let captured_at_utc = Utc::now().to_rfc3339();
+    conn.execute(
+        r#"
+        INSERT INTO rate_limit_windows
+          (connector_run_id, captured_at_utc, window_key, limit_tokens, used_tokens,
+           remaining_tokens, resets_at_utc, confidence)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+        params![
+            window.connector_run_id,
+            captured_at_utc,
+            window.window_key,
+            window.limit_tokens,
+            window.used_tokens,
+            window.remaining_tokens,
+            window.resets_at_utc.to_rfc3339(),
+            window.confidence
+        ],
+    )?;
+    Ok(())
+}
+
+fn hash_reset_batch(
+    credit_count: i64,
+    expires_at_utc: DateTime<Utc>,
+    source_connector_id: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(format!(
+        "{source_connector_id}:{credit_count}:{}",
+        expires_at_utc.to_rfc3339()
+    ));
+    hex::encode(hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,5 +523,59 @@ mod tests {
         assert!(insert_usage_event(&conn, &event).unwrap());
         assert!(!insert_usage_event(&conn, &event).unwrap());
         assert_eq!(count_usage_events(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn connector_runs_and_reset_credit_batches_roundtrip() {
+        let conn = open_memory().unwrap();
+        let run_id = insert_connector_run(
+            &conn,
+            "known-reset-credit",
+            "complete",
+            Some("known-reset-credit"),
+            Some(200),
+            None,
+            None,
+        )
+        .unwrap();
+        insert_reset_credit_batch(
+            &conn,
+            run_id,
+            4,
+            Utc.with_ymd_and_hms(2026, 7, 28, 18, 14, 0).unwrap(),
+            "known-reset-credit",
+            "high",
+        )
+        .unwrap();
+        insert_rate_limit_window(
+            &conn,
+            &NewRateLimitWindow {
+                connector_run_id: run_id,
+                window_key: "gpt-5",
+                limit_tokens: 1000,
+                used_tokens: 250,
+                remaining_tokens: 750,
+                resets_at_utc: Utc.with_ymd_and_hms(2026, 7, 3, 18, 14, 0).unwrap(),
+                confidence: "medium",
+            },
+        )
+        .unwrap();
+
+        let stored: i64 = conn
+            .query_row(
+                "SELECT credit_count FROM reset_credit_batches WHERE connector_run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 4);
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT remaining_tokens FROM rate_limit_windows WHERE connector_run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 750);
     }
 }

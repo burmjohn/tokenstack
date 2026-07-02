@@ -1,7 +1,7 @@
 {
   "version": 1,
   "createdAt": "2026-07-02T19:19:38.303Z",
-  "updatedAt": "2026-07-02T19:51:28.376Z",
+  "updatedAt": "2026-07-02T21:19:47.389Z",
   "briefPath": ".omx/ultragoal/brief.md",
   "goalsPath": ".omx/ultragoal/goals.json",
   "ledgerPath": ".omx/ultragoal/ledger.jsonl",
@@ -71,13 +71,13 @@
       "id": "G006-ship-a-tauri-v2-desktop-app-that-can",
       "title": "Ship a Tauri v2 desktop app that can run locally and build for Window...",
       "objective": "Ship a Tauri v2 desktop app that can run locally and build for Windows installer output.",
-      "status": "failed",
-      "attempt": 1,
+      "status": "complete",
+      "attempt": 2,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:49:48.022Z",
-      "startedAt": "2026-07-02T19:48:59.035Z",
-      "failedAt": "2026-07-02T19:49:48.022Z",
-      "failureReason": "Tauri app configuration and CI Windows build smoke are present, and pnpm build passed. However G006 cannot be completed on this host: cargo test --manifest-path src-tauri/Cargo.toml and pnpm tauri:build both fail during native Tauri compilation because pkg-config cannot find glib-2.0/gobject-2.0/gio-2.0. sudo -n true requires interactive authentication, so the agent cannot install Linux Tauri prerequisites. Evidence: .omx/ultragoal/evidence/08-windows-packaging.md."
+      "updatedAt": "2026-07-02T21:19:47.389Z",
+      "startedAt": "2026-07-02T20:08:33.338Z",
+      "evidence": "G006 complete with fresh packaging/safety evidence in .omx/ultragoal/evidence/08-windows-packaging.md, final quality gate in .omx/ultragoal/evidence/11-final-quality-gate.json, completed Codex snapshot in .omx/ultragoal/evidence/12-codex-goal-complete-snapshot.json, local Tauri packaging smoke artifact src-tauri/target/release/tokenstack at 18,822,952 bytes, independent code-review APPROVE, architect CLEAR, and all PRD/test-spec safety invariants verified.",
+      "completedAt": "2026-07-02T21:19:47.389Z"
     },
     {
       "id": "G007-implement-the-command-center-sot-in",

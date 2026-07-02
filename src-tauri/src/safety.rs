@@ -28,6 +28,7 @@ pub enum DocumentedStatus {
 pub struct EndpointSpec {
     pub id: String,
     pub method: HttpMethod,
+    pub scheme: String,
     pub host: String,
     pub path: String,
     pub body_allowed: bool,
@@ -59,6 +60,8 @@ pub enum SafetyError {
     MissingResponseSchema,
     #[error("endpoint host is not allowed")]
     UnsafeHost,
+    #[error("endpoint transport scheme is not allowed")]
+    UnsafeScheme,
     #[error("endpoint readonly review is missing")]
     MissingReadonlyReview,
 }
@@ -83,6 +86,7 @@ impl EndpointRegistry {
             EndpointSpec {
                 id: "known-reset-credit".to_string(),
                 method: HttpMethod::Get,
+                scheme: "https".to_string(),
                 host: "chatgpt.com".to_string(),
                 path: "/wham/rate-limit-reset-credits".to_string(),
                 body_allowed: false,
@@ -94,6 +98,7 @@ impl EndpointRegistry {
             EndpointSpec {
                 id: "undocumented-rate-limits".to_string(),
                 method: HttpMethod::Get,
+                scheme: "https".to_string(),
                 host: "chatgpt.com".to_string(),
                 path: "/backend-api/rate_limits".to_string(),
                 body_allowed: false,
@@ -108,6 +113,7 @@ impl EndpointRegistry {
         Self { endpoints }
     }
 
+    #[allow(dead_code)]
     pub fn with_endpoint(endpoint: EndpointSpec) -> Self {
         let mut endpoints = BTreeMap::new();
         endpoints.insert(endpoint.id.clone(), endpoint);
@@ -155,9 +161,15 @@ impl SafetyGuard {
             return Err(SafetyError::RequestBodyDenied);
         }
 
-        let host = request.url.host_str().unwrap_or_default();
+        let Some(host) = request.url.host_str() else {
+            return Err(SafetyError::UnsafeHost);
+        };
         if host != endpoint.host {
             return Err(SafetyError::UnsafeHost);
+        }
+
+        if request.url.scheme() != endpoint.scheme {
+            return Err(SafetyError::UnsafeScheme);
         }
 
         if endpoint.response_schema.trim().is_empty() {
@@ -269,6 +281,7 @@ mod tests {
         let endpoint = EndpointSpec {
             id: "known-reset-credit".to_string(),
             method: HttpMethod::Get,
+            scheme: "https".to_string(),
             host: "chatgpt.com".to_string(),
             path: "/wham/rate-limit-reset-credits".to_string(),
             body_allowed: false,
@@ -284,5 +297,17 @@ mod tests {
                 .unwrap_err(),
             SafetyError::MissingResponseSchema
         );
+    }
+
+    #[test]
+    fn rejects_plaintext_transport_for_registered_auth_endpoint() {
+        let guard = SafetyGuard::new(EndpointRegistry::default_readonly());
+        let req = ConnectorRequest {
+            method: HttpMethod::Get,
+            url: Url::parse("http://chatgpt.com/wham/rate-limit-reset-credits").unwrap(),
+            has_body: false,
+            endpoint_id: "known-reset-credit".to_string(),
+        };
+        assert_eq!(guard.validate(&req).unwrap_err(), SafetyError::UnsafeScheme);
     }
 }

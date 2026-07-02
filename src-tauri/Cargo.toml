@@ -8,7 +8,7 @@ license = "MIT"
 
 [features]
 default = ["tauri-app"]
-tauri-app = ["dep:tauri", "dep:tauri-plugin-sql"]
+tauri-app = ["dep:tauri"]
 
 [lib]
 name = "tokenstack_lib"
@@ -35,7 +35,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = [], optional = true }
-tauri-plugin-sql = { version = "2.4.0", features = ["sqlite"], optional = true }
 thiserror = "2"
 tracing = "0.1"
 url = "2"

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use chrono_tz::America::New_York;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,32 +109,108 @@ pub struct NextResetDto {
     pub timezone: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataMode {
+    Local,
+    Remote,
+    Combined,
+}
+
+impl DataMode {
+    fn parse(value: &str) -> Self {
+        match value {
+            "local" => Self::Local,
+            "remote" => Self::Remote,
+            _ => Self::Combined,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+            Self::Combined => "combined",
+        }
+    }
+
+    fn includes_local(self) -> bool {
+        matches!(self, Self::Local | Self::Combined)
+    }
+
+    fn includes_remote(self) -> bool {
+        matches!(self, Self::Remote | Self::Combined)
+    }
+}
+
+struct LoadedResetCredit {
+    dto: ResetCreditDto,
+    captured_at_utc: String,
+}
+
 pub fn build_dashboard_summary(
     conn: &Connection,
     data_mode: &str,
 ) -> rusqlite::Result<DashboardSummaryDto> {
+    let data_mode = DataMode::parse(data_mode);
     let generated_at_utc = Utc::now().to_rfc3339();
-    let lifetime: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events",
-        [],
-        |row| row.get(0),
-    )?;
-    let today = today_tokens_ny(conn, Utc::now())?;
-    let month = month_to_date_tokens_ny(conn, Utc::now())?;
-    let peak = conn.query_row(
-        "SELECT COALESCE(MAX(total_tokens), 0) FROM usage_events",
-        [],
-        |row| row.get::<_, i64>(0),
-    )?;
+    let (lifetime, today, month, peak) = if data_mode.includes_local() {
+        let lifetime: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events",
+            [],
+            |row| row.get(0),
+        )?;
+        let today = today_tokens_ny(conn, Utc::now())?;
+        let month = month_to_date_tokens_ny(conn, Utc::now())?;
+        let peak = conn.query_row(
+            "SELECT COALESCE(MAX(total_tokens), 0) FROM usage_events",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        (lifetime, today, month, peak)
+    } else {
+        (0, 0, 0, 0)
+    };
     let coverage = load_coverage(conn)?;
     let local_coverage = coverage
-        .first()
+        .iter()
+        .find(|entry| entry.metric_key == "local-usage")
         .cloned()
         .unwrap_or_else(default_local_coverage);
+    let loaded_reset_credits = if data_mode.includes_remote() {
+        load_reset_credits(conn)?
+    } else {
+        Vec::new()
+    };
+    let reset_credit_dtos = loaded_reset_credits
+        .iter()
+        .map(|credit| credit.dto.clone())
+        .collect::<Vec<_>>();
+    let latest_reset_run = if data_mode.includes_remote() {
+        latest_connector_run(conn, "known-reset-credit")?
+    } else {
+        None
+    };
+    let reset_coverage = reset_coverage(&loaded_reset_credits, latest_reset_run.as_ref());
+    let reset_credit_count = reset_credit_dtos
+        .iter()
+        .map(|credit| credit.credit_count)
+        .sum::<i64>();
+    let rate_limit_windows = if data_mode.includes_remote() {
+        load_rate_limit_windows(conn)?
+    } else {
+        Vec::new()
+    };
+    let latest_undocumented_run = if data_mode.includes_remote() {
+        latest_connector_run(conn, "undocumented-rate-limits")?
+    } else {
+        None
+    };
+    let undocumented_coverage =
+        undocumented_coverage(&rate_limit_windows, latest_undocumented_run.as_ref());
 
     Ok(DashboardSummaryDto {
         generated_at_utc,
-        data_mode: data_mode.to_string(),
+        data_mode: data_mode.label().to_string(),
         last_refresh_label: "just now".to_string(),
         refresh_status: "idle".to_string(),
         timezone: "America/New_York".to_string(),
@@ -170,34 +246,48 @@ pub fn build_dashboard_summary(
             MetricDto {
                 key: "reset".to_string(),
                 label: "Reset credits".to_string(),
-                value: "4".to_string(),
-                delta: "Available".to_string(),
-                status: "positive".to_string(),
-                coverage: reset_coverage(),
+                value: reset_credit_count.to_string(),
+                delta: if reset_credit_count > 0 {
+                    "Available"
+                } else {
+                    "No snapshot"
+                }
+                .to_string(),
+                status: if reset_credit_count > 0 {
+                    "positive"
+                } else {
+                    "neutral"
+                }
+                .to_string(),
+                coverage: reset_coverage.clone(),
             },
         ],
-        heatmap: heatmap(conn)?,
-        reset_credits: sample_reset_credits(),
+        heatmap: if data_mode.includes_local() {
+            heatmap(conn)?
+        } else {
+            empty_heatmap()
+        },
+        reset_credits: reset_credit_dtos.clone(),
         coverage: if coverage.is_empty() {
             vec![
                 default_local_coverage(),
-                reset_coverage(),
-                undocumented_coverage(),
+                reset_coverage.clone(),
+                undocumented_coverage.clone(),
             ]
         } else {
             let mut all = coverage;
-            all.push(reset_coverage());
-            all.push(undocumented_coverage());
+            all.push(reset_coverage.clone());
+            all.push(undocumented_coverage.clone());
             all
         },
-        connectors: sample_connectors(),
-        sessions: sample_sessions(),
-        rate_limit_windows: sample_rate_limit_windows(),
-        next_reset: NextResetDto {
-            label: "22d 03h 14m".to_string(),
-            expires_at_ny: "Jul 28, 2026, 2:14 PM EDT".to_string(),
-            timezone: "America/New_York".to_string(),
+        connectors: load_connectors(conn, data_mode)?,
+        sessions: if data_mode.includes_local() {
+            load_sessions(conn)?
+        } else {
+            Vec::new()
         },
+        rate_limit_windows,
+        next_reset: next_reset(&reset_credit_dtos),
     })
 }
 
@@ -253,6 +343,13 @@ fn load_coverage(conn: &Connection) -> rusqlite::Result<Vec<CoverageDto>> {
     )?;
     let rows = stmt.query_map([], |row| {
         let missing: String = row.get(6)?;
+        let missing_facets = serde_json::from_str(&missing).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
         Ok(CoverageDto {
             metric_key: row.get(0)?,
             source_kind: row.get(1)?,
@@ -260,7 +357,7 @@ fn load_coverage(conn: &Connection) -> rusqlite::Result<Vec<CoverageDto>> {
             confidence: row.get(3)?,
             last_evidence_at_utc: row.get(4)?,
             formula_version: row.get(5)?,
-            missing_facets: serde_json::from_str(&missing).unwrap_or_default(),
+            missing_facets,
             explanation: row.get(7)?,
         })
     })?;
@@ -313,6 +410,17 @@ fn heatmap(conn: &Connection) -> rusqlite::Result<Vec<HeatmapDayDto>> {
     Ok(days)
 }
 
+fn empty_heatmap() -> Vec<HeatmapDayDto> {
+    (0..112)
+        .map(|index| HeatmapDayDto {
+            date: format!("2026-07-{:02}", (index % 28) + 1),
+            weekday: "Mon".to_string(),
+            tokens: 0,
+            intensity: 0,
+        })
+        .collect()
+}
+
 fn default_local_coverage() -> CoverageDto {
     CoverageDto {
         metric_key: "local-history".to_string(),
@@ -326,133 +434,432 @@ fn default_local_coverage() -> CoverageDto {
     }
 }
 
-fn reset_coverage() -> CoverageDto {
+fn reset_coverage(
+    credits: &[LoadedResetCredit],
+    latest_run: Option<&ConnectorRunRow>,
+) -> CoverageDto {
+    let latest_failed = latest_run
+        .map(|run| connector_status(&run.status) == "degraded")
+        .unwrap_or(false);
+    if credits.is_empty() {
+        let latest_run_at = latest_run.map(connector_run_evidence_at);
+        return CoverageDto {
+            metric_key: "reset-credits".to_string(),
+            source_kind: "Reset credits".to_string(),
+            coverage_percent: 0,
+            confidence: "unavailable".to_string(),
+            last_evidence_at_utc: latest_run_at.unwrap_or_else(|| Utc::now().to_rfc3339()),
+            formula_version: "coverage-v1".to_string(),
+            missing_facets: vec!["successful reset-credit connector snapshot".to_string()],
+            explanation: if latest_failed {
+                "Latest reset-credit connector attempt failed and no last-good snapshot is stored yet."
+            } else {
+                "No schema-valid reset-credit connector snapshot is stored yet."
+            }
+            .to_string(),
+        };
+    }
+
+    if latest_failed {
+        return CoverageDto {
+            metric_key: "reset-credits".to_string(),
+            source_kind: "Reset credits".to_string(),
+            coverage_percent: 60,
+            confidence: "low".to_string(),
+            last_evidence_at_utc: latest_run
+                .map(connector_run_evidence_at)
+                .expect("latest_failed requires a latest connector run"),
+            formula_version: "coverage-v1".to_string(),
+            missing_facets: vec!["fresh successful reset-credit connector snapshot".to_string()],
+            explanation:
+                "Showing the last-good reset-credit snapshot because the latest connector refresh failed."
+                    .to_string(),
+        };
+    }
+
+    let confidence = if credits.iter().all(|credit| credit.dto.confidence == "high") {
+        "high"
+    } else {
+        "medium"
+    };
     CoverageDto {
         metric_key: "reset-credits".to_string(),
         source_kind: "Reset credits".to_string(),
-        coverage_percent: 100,
-        confidence: "high".to_string(),
-        last_evidence_at_utc: Utc::now().to_rfc3339(),
+        coverage_percent: if confidence == "high" { 100 } else { 80 },
+        confidence: confidence.to_string(),
+        last_evidence_at_utc: credits
+            .iter()
+            .map(|credit| credit.captured_at_utc.as_str())
+            .max()
+            .expect("reset coverage is built only for nonempty credit snapshots")
+            .to_string(),
         formula_version: "coverage-v1".to_string(),
         missing_facets: Vec::new(),
-        explanation: "Reset-credit connector snapshots are schema-valid and freshness checked."
-            .to_string(),
+        explanation:
+            "Reset-credit connector snapshots are stored, schema-valid, and freshness checked."
+                .to_string(),
     }
 }
 
-fn undocumented_coverage() -> CoverageDto {
+fn undocumented_coverage(
+    rate_limit_windows: &[RateLimitWindowDto],
+    latest_run: Option<&ConnectorRunRow>,
+) -> CoverageDto {
+    let latest_failed = latest_run
+        .map(|run| connector_status(&run.status) == "degraded")
+        .unwrap_or(false);
+    let latest_run_at = latest_run.map(connector_run_evidence_at);
+
+    if rate_limit_windows.is_empty() {
+        return CoverageDto {
+            metric_key: "undocumented".to_string(),
+            source_kind: "Undocumented (RO)".to_string(),
+            coverage_percent: 0,
+            confidence: if latest_failed { "unavailable" } else { "medium" }.to_string(),
+            last_evidence_at_utc: latest_run_at.unwrap_or_else(|| Utc::now().to_rfc3339()),
+            formula_version: "coverage-v1".to_string(),
+            missing_facets: vec![
+                "documented public contract".to_string(),
+                "successful rate-limit connector snapshot".to_string(),
+            ],
+            explanation: if latest_failed {
+                "Latest undocumented read-only connector attempt failed and no last-good snapshot is stored yet."
+            } else {
+                "Endpoint is registered as read-only with an explicit schema, but no live snapshot is stored yet."
+            }
+            .to_string(),
+        };
+    }
+
+    if latest_failed {
+        return CoverageDto {
+            metric_key: "undocumented".to_string(),
+            source_kind: "Undocumented (RO)".to_string(),
+            coverage_percent: 35,
+            confidence: "low".to_string(),
+            last_evidence_at_utc: latest_run_at
+                .expect("latest_failed requires a latest connector run"),
+            formula_version: "coverage-v1".to_string(),
+            missing_facets: vec![
+                "documented public contract".to_string(),
+                "fresh successful rate-limit connector snapshot".to_string(),
+            ],
+            explanation:
+                "Showing last-good rate-limit windows because the latest undocumented read-only refresh failed."
+                    .to_string(),
+        };
+    }
+
     CoverageDto {
         metric_key: "undocumented".to_string(),
         source_kind: "Undocumented (RO)".to_string(),
         coverage_percent: 68,
         confidence: "medium".to_string(),
-        last_evidence_at_utc: Utc::now().to_rfc3339(),
+        last_evidence_at_utc: latest_run_at.unwrap_or_else(|| Utc::now().to_rfc3339()),
         formula_version: "coverage-v1".to_string(),
         missing_facets: vec!["documented public contract".to_string()],
-        explanation: "Endpoint is registered as read-only with an explicit schema; confidence remains conservative.".to_string(),
+        explanation:
+            "Endpoint is registered as read-only with an explicit schema, but confidence remains conservative."
+                .to_string(),
     }
 }
 
-fn sample_reset_credits() -> Vec<ResetCreditDto> {
-    [
-        ("reset-1", 4, "2026-07-28T18:14:00Z", 22),
-        ("reset-2", 3, "2026-08-25T18:14:00Z", 50),
-        ("reset-3", 2, "2026-09-22T18:14:00Z", 78),
-        ("reset-4", 1, "2026-10-20T18:14:00Z", 106),
-    ]
-    .into_iter()
-    .map(|(id, credit_count, utc, days_remaining)| {
-        let expires = DateTime::parse_from_rfc3339(utc)
-            .unwrap()
-            .with_timezone(&Utc);
-        ResetCreditDto {
-            id: id.to_string(),
-            credit_count,
-            expires_at_utc: utc.to_string(),
-            expires_at_ny: format_reset_expiration_ny(expires),
-            days_remaining,
-            confidence: "high".to_string(),
-        }
-    })
-    .collect()
+fn load_reset_credits(conn: &Connection) -> rusqlite::Result<Vec<LoadedResetCredit>> {
+    let Some(run_id) = latest_successful_connector_run_id(conn, "known-reset-credit")? else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, credit_count, expires_at_utc, confidence, captured_at_utc
+        FROM reset_credit_batches
+        WHERE connector_run_id = ?1
+        ORDER BY expires_at_utc ASC
+        LIMIT 12
+        "#,
+    )?;
+    let rows = stmt.query_map([run_id], |row| {
+        let id: i64 = row.get(0)?;
+        let expires_raw: String = row.get(2)?;
+        let expires_at_utc = parse_db_utc(&expires_raw, 2)?;
+        let days_remaining = (expires_at_utc - Utc::now()).num_days().max(0);
+        Ok(LoadedResetCredit {
+            dto: ResetCreditDto {
+                id: format!("reset-{id}"),
+                credit_count: row.get(1)?,
+                expires_at_utc: expires_at_utc.to_rfc3339(),
+                expires_at_ny: format_reset_expiration_ny(expires_at_utc),
+                days_remaining,
+                confidence: row.get(3)?,
+            },
+            captured_at_utc: row.get(4)?,
+        })
+    })?;
+    rows.collect()
 }
 
-fn sample_connectors() -> Vec<ConnectorDto> {
-    vec![
+fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<Vec<ConnectorDto>> {
+    let local_count: i64 = if data_mode.includes_local() {
+        conn.query_row("SELECT COUNT(*) FROM usage_events", [], |row| row.get(0))?
+    } else {
+        0
+    };
+    let local_last_run: Option<String> = conn
+        .query_row(
+            "SELECT completed_at_utc FROM import_runs ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let known_run = if data_mode.includes_remote() {
+        latest_connector_run(conn, "known-reset-credit")?
+    } else {
+        None
+    };
+    let undocumented_run = if data_mode.includes_remote() {
+        latest_connector_run(conn, "undocumented-rate-limits")?
+    } else {
+        None
+    };
+
+    Ok(vec![
         ConnectorDto {
             id: "local".to_string(),
             name: "Local Codex CLI".to_string(),
-            detail: "~/.codex/history/*.jsonl".to_string(),
-            status: "connected".to_string(),
+            detail: "configured local Codex JSONL roots".to_string(),
+            status: if local_count > 0 {
+                "connected"
+            } else {
+                "unavailable"
+            }
+            .to_string(),
             read_only: true,
             safety_class: "Read-only".to_string(),
-            last_run_at_utc: Utc::now().to_rfc3339(),
+            last_run_at_utc: local_last_run.unwrap_or_else(no_evidence_timestamp),
         },
         ConnectorDto {
             id: "known-reset-credit".to_string(),
             name: "Known read-only endpoint".to_string(),
             detail: "/wham/rate-limit-reset-credits".to_string(),
-            status: "connected".to_string(),
+            status: known_run
+                .as_ref()
+                .map(|run| connector_status(&run.status))
+                .unwrap_or_else(|| "unavailable".to_string()),
             read_only: true,
             safety_class: "Read-only".to_string(),
-            last_run_at_utc: Utc::now().to_rfc3339(),
+            last_run_at_utc: known_run
+                .map(|run| run.completed_at_utc.unwrap_or(run.started_at_utc))
+                .unwrap_or_else(no_evidence_timestamp),
         },
         ConnectorDto {
             id: "undocumented-ro".to_string(),
             name: "Undocumented (RO)".to_string(),
             detail: "registered schema-gated endpoint".to_string(),
-            status: "connected".to_string(),
+            status: undocumented_run
+                .as_ref()
+                .map(|run| connector_status(&run.status))
+                .unwrap_or_else(|| "unavailable".to_string()),
             read_only: true,
             safety_class: "Read-only".to_string(),
-            last_run_at_utc: Utc::now().to_rfc3339(),
+            last_run_at_utc: undocumented_run
+                .map(|run| run.completed_at_utc.unwrap_or(run.started_at_utc))
+                .unwrap_or_else(no_evidence_timestamp),
         },
-    ]
+    ])
 }
 
-fn sample_sessions() -> Vec<SessionDto> {
-    vec![
-        SessionDto {
-            id: "s1".to_string(),
-            start_time: "Jun 14, 1:12 PM".to_string(),
-            duration: "47m 23s".to_string(),
-            tokens: "512.3M".to_string(),
-            peak_tokens: "1.72B".to_string(),
-            mode: "deep-research".to_string(),
-            sources: vec!["CLI".to_string(), "Cloud".to_string()],
-        },
-        SessionDto {
-            id: "s2".to_string(),
-            start_time: "Jun 14, 10:01 AM".to_string(),
-            duration: "32m 11s".to_string(),
-            tokens: "286.4M".to_string(),
-            peak_tokens: "1.04B".to_string(),
-            mode: "code-review".to_string(),
-            sources: vec!["CLI".to_string(), "Cloud".to_string()],
-        },
-    ]
+fn no_evidence_timestamp() -> String {
+    String::new()
 }
 
-fn sample_rate_limit_windows() -> Vec<RateLimitWindowDto> {
-    vec![
-        RateLimitWindowDto {
-            id: "1m".to_string(),
-            window: "1m".to_string(),
-            limit: "20.0B".to_string(),
-            used: "11.2B".to_string(),
-            remaining: "8.8B (44%)".to_string(),
-            resets_in: "00:14".to_string(),
-            progress_percent: 56,
+fn connector_status(status: &str) -> String {
+    match status {
+        "complete" | "connected" => "connected",
+        "failed" | "degraded" => "degraded",
+        _ => "unavailable",
+    }
+    .to_string()
+}
+
+struct ConnectorRunRow {
+    started_at_utc: String,
+    completed_at_utc: Option<String>,
+    status: String,
+}
+
+fn latest_connector_run(
+    conn: &Connection,
+    connector_id: &str,
+) -> rusqlite::Result<Option<ConnectorRunRow>> {
+    conn.query_row(
+        r#"
+        SELECT started_at_utc, completed_at_utc, status
+        FROM connector_runs
+        WHERE connector_id = ?1
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+        [connector_id],
+        |row| {
+            Ok(ConnectorRunRow {
+                started_at_utc: row.get(0)?,
+                completed_at_utc: row.get(1)?,
+                status: row.get(2)?,
+            })
         },
-        RateLimitWindowDto {
-            id: "30d".to_string(),
-            window: "30d".to_string(),
-            limit: "20.00T".to_string(),
-            used: "3.62T".to_string(),
-            remaining: "16.38T (82%)".to_string(),
-            resets_in: "16d 03h".to_string(),
-            progress_percent: 18,
-        },
-    ]
+    )
+    .optional()
+}
+
+fn connector_run_evidence_at(run: &ConnectorRunRow) -> String {
+    run.completed_at_utc
+        .clone()
+        .unwrap_or_else(|| run.started_at_utc.clone())
+}
+
+fn latest_successful_connector_run_id(
+    conn: &Connection,
+    connector_id: &str,
+) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        r#"
+        SELECT id
+        FROM connector_runs
+        WHERE connector_id = ?1 AND status = 'complete'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+        [connector_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+fn load_sessions(conn: &Connection) -> rusqlite::Result<Vec<SessionDto>> {
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT session_uid, MIN(occurred_at_utc), MAX(occurred_at_utc),
+               SUM(total_tokens), MAX(total_tokens), COALESCE(MAX(mode), 'unknown')
+        FROM usage_events
+        GROUP BY session_uid
+        ORDER BY MAX(occurred_at_utc) DESC
+        LIMIT 8
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let start_raw: String = row.get(1)?;
+        let end_raw: String = row.get(2)?;
+        let start = parse_db_utc(&start_raw, 1)?;
+        let end = parse_db_utc(&end_raw, 2)?;
+        let total: i64 = row.get(3)?;
+        let peak: i64 = row.get(4)?;
+        Ok(SessionDto {
+            id: row.get(0)?,
+            start_time: start
+                .with_timezone(&New_York)
+                .format("%b %-d, %-I:%M %p")
+                .to_string(),
+            duration: format_duration(end - start),
+            tokens: compact_tokens(total),
+            peak_tokens: compact_tokens(peak),
+            mode: row.get(5)?,
+            sources: vec!["Local history".to_string()],
+        })
+    })?;
+    rows.collect()
+}
+
+fn load_rate_limit_windows(conn: &Connection) -> rusqlite::Result<Vec<RateLimitWindowDto>> {
+    let Some(run_id) = latest_successful_connector_run_id(conn, "undocumented-rate-limits")? else {
+        return Ok(Vec::new());
+    };
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, window_key, limit_tokens, used_tokens, remaining_tokens, resets_at_utc
+        FROM rate_limit_windows
+        WHERE connector_run_id = ?1
+        ORDER BY resets_at_utc ASC
+        LIMIT 8
+        "#,
+    )?;
+    let rows = stmt.query_map([run_id], |row| {
+        let id: i64 = row.get(0)?;
+        let limit: i64 = row.get(2)?;
+        let used: i64 = row.get(3)?;
+        let remaining: i64 = row.get(4)?;
+        let resets_raw: String = row.get(5)?;
+        let resets_at = parse_db_utc(&resets_raw, 5)?;
+        Ok(RateLimitWindowDto {
+            id: format!("rate-limit-{id}"),
+            window: row.get(1)?,
+            limit: compact_tokens(limit),
+            used: compact_tokens(used),
+            remaining: format!(
+                "{} ({:.0}%)",
+                compact_tokens(remaining),
+                percent(remaining, limit)
+            ),
+            resets_in: format_resets_in(resets_at - Utc::now()),
+            progress_percent: percent(used, limit).round() as i64,
+        })
+    })?;
+    rows.collect()
+}
+
+fn next_reset(reset_credits: &[ResetCreditDto]) -> NextResetDto {
+    reset_credits
+        .first()
+        .map(|credit| NextResetDto {
+            label: format!("{}d remaining", credit.days_remaining),
+            expires_at_ny: credit.expires_at_ny.clone(),
+            timezone: "America/New_York".to_string(),
+        })
+        .unwrap_or_else(|| NextResetDto {
+            label: "No reset-credit snapshot".to_string(),
+            expires_at_ny: "Unavailable".to_string(),
+            timezone: "America/New_York".to_string(),
+        })
+}
+
+fn parse_db_utc(input: &str, column: usize) -> rusqlite::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(input)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                column,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+}
+
+fn format_duration(duration: chrono::Duration) -> String {
+    let seconds = duration.num_seconds().max(0);
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    if hours > 0 {
+        format!("{hours}h {:02}m", minutes % 60)
+    } else {
+        format!("{minutes}m {:02}s", seconds % 60)
+    }
+}
+
+fn format_resets_in(duration: chrono::Duration) -> String {
+    let minutes = duration.num_minutes().max(0);
+    let days = minutes / 1440;
+    let hours = (minutes % 1440) / 60;
+    if days > 0 {
+        format!("{days}d {hours:02}h")
+    } else {
+        format!("{hours:02}h {:02}m", minutes % 60)
+    }
+}
+
+fn percent(numerator: i64, denominator: i64) -> f64 {
+    if denominator <= 0 {
+        0.0
+    } else {
+        ((numerator as f64 / denominator as f64) * 100.0).clamp(0.0, 100.0)
+    }
 }
 
 #[cfg(test)]
@@ -543,5 +950,163 @@ mod tests {
         let summary = build_dashboard_summary(&conn, "local").unwrap();
         assert_eq!(summary.metrics[0].value, "0");
         assert_eq!(summary.timezone, "America/New_York");
+    }
+
+    #[test]
+    fn missing_reset_connector_evidence_does_not_overstate_coverage() {
+        let conn = open_memory().unwrap();
+        let summary = build_dashboard_summary(&conn, "combined").unwrap();
+        let reset_metric = summary
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "reset")
+            .unwrap();
+
+        assert_eq!(reset_metric.value, "0");
+        assert_eq!(reset_metric.coverage.coverage_percent, 0);
+        assert_eq!(reset_metric.coverage.confidence, "unavailable");
+        assert!(summary.reset_credits.is_empty());
+        assert!(summary.rate_limit_windows.is_empty());
+    }
+
+    #[test]
+    fn data_mode_filters_local_and_remote_sources() {
+        let conn = seeded_conn();
+        let run_id = crate::db::insert_connector_run(
+            &conn,
+            "known-reset-credit",
+            "complete",
+            Some("known-reset-credit"),
+            Some(200),
+            None,
+            None,
+        )
+        .unwrap();
+        crate::db::insert_reset_credit_batch(
+            &conn,
+            run_id,
+            4,
+            Utc.with_ymd_and_hms(2026, 7, 28, 18, 14, 0).unwrap(),
+            "known-reset-credit",
+            "high",
+        )
+        .unwrap();
+
+        let local = build_dashboard_summary(&conn, "local").unwrap();
+        let remote = build_dashboard_summary(&conn, "remote").unwrap();
+        let combined = build_dashboard_summary(&conn, "combined").unwrap();
+
+        assert_eq!(local.metrics[0].value, "175");
+        assert_eq!(local.metrics[4].value, "0");
+        assert!(local.reset_credits.is_empty());
+        assert_eq!(remote.metrics[0].value, "0");
+        assert_eq!(remote.metrics[4].value, "4");
+        assert!(remote.sessions.is_empty());
+        assert_eq!(combined.metrics[0].value, "175");
+        assert_eq!(combined.metrics[4].value, "4");
+    }
+
+    #[test]
+    fn repeated_remote_refreshes_use_latest_successful_snapshot_only() {
+        let conn = open_memory().unwrap();
+        for _ in 0..2 {
+            let reset_run_id = crate::db::insert_connector_run(
+                &conn,
+                "known-reset-credit",
+                "complete",
+                Some("known-reset-credit"),
+                Some(200),
+                None,
+                None,
+            )
+            .unwrap();
+            crate::db::insert_reset_credit_batch(
+                &conn,
+                reset_run_id,
+                4,
+                Utc.with_ymd_and_hms(2026, 7, 28, 18, 14, 0).unwrap(),
+                "known-reset-credit",
+                "high",
+            )
+            .unwrap();
+
+            let rate_run_id = crate::db::insert_connector_run(
+                &conn,
+                "undocumented-rate-limits",
+                "complete",
+                Some("undocumented-rate-limits"),
+                Some(200),
+                None,
+                None,
+            )
+            .unwrap();
+            crate::db::insert_rate_limit_window(
+                &conn,
+                &crate::db::NewRateLimitWindow {
+                    connector_run_id: rate_run_id,
+                    window_key: "gpt-5",
+                    limit_tokens: 1000,
+                    used_tokens: 250,
+                    remaining_tokens: 750,
+                    resets_at_utc: Utc.with_ymd_and_hms(2026, 7, 3, 18, 14, 0).unwrap(),
+                    confidence: "medium",
+                },
+            )
+            .unwrap();
+        }
+        let failed_run_id = crate::db::insert_connector_run(
+            &conn,
+            "known-reset-credit",
+            "failed",
+            Some("known-reset-credit"),
+            None,
+            Some("connector_failed"),
+            Some("synthetic failure"),
+        )
+        .unwrap();
+        crate::db::insert_reset_credit_batch(
+            &conn,
+            failed_run_id,
+            99,
+            Utc.with_ymd_and_hms(2026, 12, 1, 18, 14, 0).unwrap(),
+            "known-reset-credit",
+            "low",
+        )
+        .unwrap();
+        crate::db::insert_connector_run(
+            &conn,
+            "undocumented-rate-limits",
+            "failed",
+            Some("undocumented-rate-limits"),
+            None,
+            Some("connector_failed"),
+            Some("synthetic failure"),
+        )
+        .unwrap();
+
+        let summary = build_dashboard_summary(&conn, "remote").unwrap();
+        let reset_metric = summary
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "reset")
+            .unwrap();
+        let undocumented_coverage = summary
+            .coverage
+            .iter()
+            .find(|coverage| coverage.metric_key == "undocumented")
+            .unwrap();
+
+        assert_eq!(summary.metrics[4].value, "4");
+        assert_eq!(summary.reset_credits.len(), 1);
+        assert_eq!(reset_metric.coverage.coverage_percent, 60);
+        assert_eq!(reset_metric.coverage.confidence, "low");
+        assert!(reset_metric
+            .coverage
+            .explanation
+            .contains("latest connector refresh failed"));
+        assert_eq!(summary.rate_limit_windows.len(), 1);
+        assert_eq!(summary.rate_limit_windows[0].remaining, "750 (75%)");
+        assert_eq!(undocumented_coverage.coverage_percent, 35);
+        assert_eq!(undocumented_coverage.confidence, "low");
     }
 }
