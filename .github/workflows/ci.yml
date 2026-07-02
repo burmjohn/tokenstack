@@ -51,4 +51,4 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - run: pnpm install --frozen-lockfile
-      - run: pnpm tauri:build -- --target x86_64-pc-windows-msvc
+      - run: pnpm exec tauri build --target x86_64-pc-windows-msvc
