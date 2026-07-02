@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "createdAt": "2026-07-02T19:19:38.303Z",
+  "updatedAt": "2026-07-02T19:45:51.140Z",
+  "briefPath": ".omx/ultragoal/brief.md",
+  "goalsPath": ".omx/ultragoal/goals.json",
+  "ledgerPath": ".omx/ultragoal/ledger.jsonl",
+  "codexGoalMode": "aggregate",
+  "goals": [
+    {
+      "id": "G001-import-local-codex-history-from-sess",
+      "title": "Import local Codex history from session/archive JSONL and any non-sec...",
+      "objective": "Import local Codex history from session/archive JSONL and any non-secret local metadata stores.",
+      "status": "complete",
+      "attempt": 1,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:45:51.140Z",
+      "startedAt": "2026-07-02T19:19:46.666Z",
+      "completedAt": "2026-07-02T19:45:51.140Z",
+      "evidence": "Implemented local Codex JSONL importer, SQLite migrations, source coverage, and synthetic fixture policy. Evidence: .omx/ultragoal/evidence/03-data-import-analytics.md; verification: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features passed 30 Rust core tests; pnpm fixture:scan passed; pnpm secret:scan passed."
+    },
+    {
+      "id": "G002-refresh-reset-credit-availability-an",
+      "title": "Refresh reset-credit availability and expiration data through read-on...",
+      "objective": "Refresh reset-credit availability and expiration data through read-only remote connectors.",
+      "status": "pending",
+      "attempt": 0,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:19:38.303Z"
+    },
+    {
+      "id": "G003-compute-token-analytics-lifetime-tok",
+      "title": "Compute token analytics: lifetime tokens, today, this month, peak ses...",
+      "objective": "Compute token analytics: lifetime tokens, today, this month, peak session, daily heatmap, monthly trends, recent sessions, and rate-limit windows where source data supports them.",
+      "status": "pending",
+      "attempt": 0,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:19:38.303Z"
+    },
+    {
+      "id": "G004-display-source-coverage-confidence-f",
+      "title": "Display source coverage/confidence for every major metric and connector.",
+      "objective": "Display source coverage/confidence for every major metric and connector.",
+      "status": "pending",
+      "attempt": 0,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:19:38.303Z"
+    },
+    {
+      "id": "G005-convert-reset-credit-expiration-time",
+      "title": "Convert reset-credit expiration timestamps to `America/New_York` with...",
+      "objective": "Convert reset-credit expiration timestamps to `America/New_York` with DST-safe tests.",
+      "status": "pending",
+      "attempt": 0,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:19:38.303Z"
+    },
+    {
+      "id": "G006-ship-a-tauri-v2-desktop-app-that-can",
+      "title": "Ship a Tauri v2 desktop app that can run locally and build for Window...",
+      "objective": "Ship a Tauri v2 desktop app that can run locally and build for Windows installer output.",
+      "status": "pending",
+      "attempt": 0,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:19:38.303Z"
+    },
+    {
+      "id": "G007-implement-the-command-center-sot-in",
+      "title": "Implement the Command Center SOT in complete dark and light themes.",
+      "objective": "Implement the Command Center SOT in complete dark and light themes.",
+      "status": "pending",
+      "attempt": 0,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:19:38.303Z"
+    },
+    {
+      "id": "G008-preserve-open-source-quality-docs-te",
+      "title": "Preserve open source quality: docs, tests, CI, security policy, contr...",
+      "objective": "Preserve open source quality: docs, tests, CI, security policy, contributor guide, and frequent Lore-protocol commits.",
+      "status": "pending",
+      "attempt": 0,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:19:38.303Z"
+    },
+    {
+      "id": "G009-finish-with-a-beautiful-readme-that",
+      "title": "Finish with a beautiful README that includes real dark/light screensh...",
+      "objective": "Finish with a beautiful README that includes real dark/light screenshots captured from the finished app.",
+      "status": "pending",
+      "attempt": 0,
+      "createdAt": "2026-07-02T19:19:38.303Z",
+      "updatedAt": "2026-07-02T19:19:38.303Z"
+    }
+  ],
+  "codexObjective": "Complete the durable ultragoal plan in .omx/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .omx/ultragoal/ledger.jsonl as the audit trail."
+}

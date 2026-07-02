@@ -1,0 +1,3 @@
+{"id":"synthetic-event-1","type":"token_count","timestamp":"2026-07-02T14:12:00Z","session_id":"synthetic-session-1","model":"gpt-5.5","mode":"executor","usage":{"input_tokens":128000000,"output_tokens":384000000,"cache_read_tokens":0,"cache_write_tokens":300000}}
+{"id":"synthetic-event-2","type":"token_count","timestamp":"2026-07-02T15:42:00Z","session_id":"synthetic-session-1","model":"gpt-5.5","mode":"executor","usage":{"total_tokens":512300000}}
+{"id":"synthetic-event-3","type":"token_count","timestamp":"2026-07-01T16:05:00Z","session_id":"synthetic-session-2","model":"gpt-5.5","mode":"architect","usage":{"input_tokens":420000000,"output_tokens":700000000}}

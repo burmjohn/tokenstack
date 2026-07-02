@@ -1,0 +1,11 @@
+{
+    "schema_version": 1,
+    "commit": "HEAD",
+    "indexed_at": "2026-07-02T19:44:01Z",
+    "project": "home-jburmeister-projects-tokenstack",
+    "nodes": 1283,
+    "edges": 1986,
+    "original_size": 2228224,
+    "compressed_size": 139284,
+    "compression_level": 9
+}

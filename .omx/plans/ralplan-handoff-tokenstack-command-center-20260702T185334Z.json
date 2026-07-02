@@ -1,0 +1,66 @@
+{
+  "workflow": "ralplan",
+  "status": "complete",
+  "task": "TokenStack Command Center implementation plan",
+  "created_at_utc": "2026-07-02T18:53:34Z",
+  "completed_at_utc": "2026-07-02T19:13:18Z",
+  "planning_artifacts": {
+    "prd": "/home/jburmeister/projects/tokenstack/.omx/plans/prd-tokenstack-command-center-20260702T185334Z.md",
+    "test_spec": "/home/jburmeister/projects/tokenstack/.omx/plans/test-spec-tokenstack-command-center-20260702T185334Z.md",
+    "implementation_plan": "/home/jburmeister/projects/tokenstack/.omx/plans/implementation-plan-tokenstack-command-center-20260702T185334Z.md"
+  },
+  "binding_sources": [
+    "/home/jburmeister/projects/tokenstack/.omx/specs/deep-interview-token-usage-dashboard.md",
+    "/home/jburmeister/projects/tokenstack/.omx/specs/design-sot-tokenstack-command-center.md",
+    "/home/jburmeister/projects/tokenstack/.omx/specs/assets/tokenstack-command-center-dark-sot.png",
+    "/home/jburmeister/projects/tokenstack/.omx/specs/assets/tokenstack-command-center-light-sot.png"
+  ],
+  "ralplan_architect_review": {
+    "order": 1,
+    "verdict": "APPROVE",
+    "completed": true,
+    "summary": "Architect approved the Rust-owned safety/data core, audited read-only connector registry, SQLite-backed local persistence, Command Center UI mapping, and Ultragoal handoff. Strongest antithesis was that frontend-first/plugin-heavy Tauri could ship faster, but the plan correctly prioritizes safety and privacy. Recommended improvements were applied before Critic review: source-coverage scoring contract, Windows packaging target/signing distinction, explicit MIT license ADR, concrete Ultragoal evidence files, and first vertical slice."
+  },
+  "ralplan_critic_review": {
+    "order": 2,
+    "verdict": "APPROVE",
+    "completed": true,
+    "summary": "Critic approved the revised PRD, test spec, and implementation plan as actionable for Ultragoal handoff. Critic verified clarity, verifiability, completeness, principle-option consistency, fair alternatives, risk mitigation, deliberate-mode pre-mortem and expanded tests, and durable Ultragoal completion tracking. No blocking issues found."
+  },
+  "ralplan_consensus_gate": {
+    "complete": true,
+    "required_order": [
+      "architect",
+      "critic"
+    ],
+    "observed_order": [
+      "architect",
+      "critic"
+    ],
+    "ready_for_execution_handoff": true,
+    "recommended_handoff": "$ultragoal",
+    "recommended_parallel_support": "$team"
+  },
+  "hard_invariants": [
+    "Never call any endpoint containing /consume.",
+    "Never consume, redeem, or mutate reset credits.",
+    "Never print, store, log, display, fixture, or commit auth tokens, account secrets, or full auth file contents.",
+    "All auth-adjacent reads must be read-only and guarded.",
+    "Undocumented read-only endpoints are allowed and enabled by default only behind audited connector code and safety checks."
+  ],
+  "ultragoal_handoff": {
+    "primary_plan": "/home/jburmeister/projects/tokenstack/.omx/plans/implementation-plan-tokenstack-command-center-20260702T185334Z.md",
+    "test_spec": "/home/jburmeister/projects/tokenstack/.omx/plans/test-spec-tokenstack-command-center-20260702T185334Z.md",
+    "definition_of_done": "Do not mark complete until every PRD acceptance criterion, test-spec ledger item, documentation requirement, screenshot requirement, packaging smoke, and safety invariant has fresh evidence.",
+    "evidence_directory": "/home/jburmeister/projects/tokenstack/.omx/ultragoal/evidence",
+    "first_vertical_slice": [
+      "Repository/tooling initialized.",
+      "Safety guard with /consume rejection tests.",
+      "Empty SQLite migration.",
+      "One synthetic local-history fixture imported into SQLite.",
+      "One read-only reset-credit connector behind mock HTTP.",
+      "One dashboard summary command returning sanitized synthetic data.",
+      "One minimal Command Center dashboard screen rendering that data."
+    ]
+  }
+}

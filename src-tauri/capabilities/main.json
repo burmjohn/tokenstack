@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "TokenStack main window permissions",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "sql:default"
+  ]
+}
