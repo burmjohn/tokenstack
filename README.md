@@ -41,7 +41,7 @@ Windows packaging is configured for Tauri NSIS output. A Windows runner should e
 
 ```sh
 pnpm install
-pnpm tauri:build -- --target x86_64-pc-windows-msvc
+pnpm exec tauri build --target x86_64-pc-windows-msvc
 ```
 
 ## Data Sources
@@ -50,7 +50,7 @@ TokenStack imports synthetic-safe Codex history shapes from local JSONL files an
 
 ## Privacy Summary
 
-TokenStack does not include an auth viewer, token export, token debugger, or mutation feature. Fixtures are synthetic. Error and connector status messages are redacted before reaching logs, IPC payloads, UI, screenshots, or SQLite.
+TokenStack runs locally and summarizes usage without exposing auth tokens or raw credential data. Test fixtures are synthetic, and connector errors are shown as safe status messages.
 
 ## License
 
