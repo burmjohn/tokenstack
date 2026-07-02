@@ -17,3 +17,5 @@ Generated: 2026-07-02
 ## Exact Local Packaging Blocker
 
 `cargo test --manifest-path src-tauri/Cargo.toml` with the default Tauri app feature failed before app code compilation because this Linux host lacks `glib-2.0`, `gobject-2.0`, and `gio-2.0` pkg-config packages. `sudo -n true` failed with interactive authentication required, so the missing host prerequisites cannot be installed by this agent. Windows build smoke is configured in CI but has not been executed locally because the current host is Linux and lacks the required native Tauri desktop dependencies.
+
+`pnpm tauri:build` was also run. It completed the `beforeBuildCommand` frontend production build successfully, then failed during native Tauri compilation on the same missing `glib-2.0` and `gobject-2.0` pkg-config packages. No installer artifact was produced on this host.

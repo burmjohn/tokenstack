@@ -1,7 +1,7 @@
 {
   "version": 1,
   "createdAt": "2026-07-02T19:19:38.303Z",
-  "updatedAt": "2026-07-02T19:45:51.140Z",
+  "updatedAt": "2026-07-02T19:51:28.376Z",
   "briefPath": ".omx/ultragoal/brief.md",
   "goalsPath": ".omx/ultragoal/goals.json",
   "ledgerPath": ".omx/ultragoal/ledger.jsonl",
@@ -23,73 +23,97 @@
       "id": "G002-refresh-reset-credit-availability-an",
       "title": "Refresh reset-credit availability and expiration data through read-on...",
       "objective": "Refresh reset-credit availability and expiration data through read-only remote connectors.",
-      "status": "pending",
-      "attempt": 0,
+      "status": "complete",
+      "attempt": 1,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:19:38.303Z"
+      "updatedAt": "2026-07-02T19:47:12.145Z",
+      "startedAt": "2026-07-02T19:46:50.367Z",
+      "completedAt": "2026-07-02T19:47:12.145Z",
+      "evidence": "Implemented KnownResetCreditsConnector for /wham/rate-limit-reset-credits behind SafetyGuard, with schema validation, redacted failure output, undocumented read-only registry metadata, and mock HTTP proof. Evidence: .omx/ultragoal/evidence/04-readonly-connectors.md; verification: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features passed connector and safety tests."
     },
     {
       "id": "G003-compute-token-analytics-lifetime-tok",
       "title": "Compute token analytics: lifetime tokens, today, this month, peak ses...",
       "objective": "Compute token analytics: lifetime tokens, today, this month, peak session, daily heatmap, monthly trends, recent sessions, and rate-limit windows where source data supports them.",
-      "status": "pending",
-      "attempt": 0,
+      "status": "complete",
+      "attempt": 1,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:19:38.303Z"
+      "updatedAt": "2026-07-02T19:47:48.778Z",
+      "startedAt": "2026-07-02T19:47:29.079Z",
+      "completedAt": "2026-07-02T19:47:48.778Z",
+      "evidence": "Implemented lifetime, today, month-to-date, peak, heatmap DTOs, reset timeline DTOs, sessions and rate-limit window dashboard DTOs. Evidence: .omx/ultragoal/evidence/05-analytics-timezone.md and .omx/ultragoal/evidence/03-data-import-analytics.md; verification: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features passed 30 Rust core tests including analytics and zero-data cases."
     },
     {
       "id": "G004-display-source-coverage-confidence-f",
       "title": "Display source coverage/confidence for every major metric and connector.",
       "objective": "Display source coverage/confidence for every major metric and connector.",
-      "status": "pending",
-      "attempt": 0,
+      "status": "complete",
+      "attempt": 1,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:19:38.303Z"
+      "updatedAt": "2026-07-02T19:48:23.502Z",
+      "startedAt": "2026-07-02T19:47:56.840Z",
+      "completedAt": "2026-07-02T19:48:23.502Z",
+      "evidence": "Implemented formula-backed coverage DTOs, SQLite source_coverage records, conservative local coverage scoring, Zod coverage validation, source coverage panel, metric coverage tooltips, and connector confidence labels. Evidence: .omx/ultragoal/evidence/03-data-import-analytics.md, .omx/ultragoal/evidence/06-frontend-data-layer.md, .omx/ultragoal/evidence/07-command-center-ui.md; verification: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features, pnpm test, and pnpm test:browser passed."
     },
     {
       "id": "G005-convert-reset-credit-expiration-time",
       "title": "Convert reset-credit expiration timestamps to `America/New_York` with...",
       "objective": "Convert reset-credit expiration timestamps to `America/New_York` with DST-safe tests.",
-      "status": "pending",
-      "attempt": 0,
+      "status": "complete",
+      "attempt": 1,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:19:38.303Z"
+      "updatedAt": "2026-07-02T19:48:49.095Z",
+      "startedAt": "2026-07-02T19:48:30.883Z",
+      "completedAt": "2026-07-02T19:48:49.095Z",
+      "evidence": "Implemented America/New_York reset expiration formatting and visible timezone labels. Evidence: .omx/ultragoal/evidence/05-analytics-timezone.md and docs/screenshots/tokenstack-dashboard-dark.png/light.png; verification: cargo test --manifest-path src-tauri/Cargo.toml --no-default-features passed formats_reset_expiration_in_america_new_york, handles_dst_spring_forward, and handles_dst_fall_back; pnpm test:browser passed."
     },
     {
       "id": "G006-ship-a-tauri-v2-desktop-app-that-can",
       "title": "Ship a Tauri v2 desktop app that can run locally and build for Window...",
       "objective": "Ship a Tauri v2 desktop app that can run locally and build for Windows installer output.",
-      "status": "pending",
-      "attempt": 0,
+      "status": "failed",
+      "attempt": 1,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:19:38.303Z"
+      "updatedAt": "2026-07-02T19:49:48.022Z",
+      "startedAt": "2026-07-02T19:48:59.035Z",
+      "failedAt": "2026-07-02T19:49:48.022Z",
+      "failureReason": "Tauri app configuration and CI Windows build smoke are present, and pnpm build passed. However G006 cannot be completed on this host: cargo test --manifest-path src-tauri/Cargo.toml and pnpm tauri:build both fail during native Tauri compilation because pkg-config cannot find glib-2.0/gobject-2.0/gio-2.0. sudo -n true requires interactive authentication, so the agent cannot install Linux Tauri prerequisites. Evidence: .omx/ultragoal/evidence/08-windows-packaging.md."
     },
     {
       "id": "G007-implement-the-command-center-sot-in",
       "title": "Implement the Command Center SOT in complete dark and light themes.",
       "objective": "Implement the Command Center SOT in complete dark and light themes.",
-      "status": "pending",
-      "attempt": 0,
+      "status": "complete",
+      "attempt": 1,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:19:38.303Z"
+      "updatedAt": "2026-07-02T19:50:14.698Z",
+      "startedAt": "2026-07-02T19:49:53.484Z",
+      "completedAt": "2026-07-02T19:50:14.698Z",
+      "evidence": "Implemented the Command Center dashboard as the first screen with persistent sidebar, header safety controls, metric strip, heatmap, reset timeline, source coverage, active connectors, tables, next reset panel, footer safety row, and complete dark/light root-theme support. Evidence: .omx/ultragoal/evidence/07-command-center-ui.md, docs/screenshots/tokenstack-dashboard-dark.png, docs/screenshots/tokenstack-dashboard-light.png; verification: pnpm test and pnpm test:browser passed with no console errors."
     },
     {
       "id": "G008-preserve-open-source-quality-docs-te",
       "title": "Preserve open source quality: docs, tests, CI, security policy, contr...",
       "objective": "Preserve open source quality: docs, tests, CI, security policy, contributor guide, and frequent Lore-protocol commits.",
-      "status": "pending",
-      "attempt": 0,
+      "status": "complete",
+      "attempt": 1,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:19:38.303Z"
+      "updatedAt": "2026-07-02T19:50:44.110Z",
+      "startedAt": "2026-07-02T19:50:21.314Z",
+      "completedAt": "2026-07-02T19:50:44.110Z",
+      "evidence": "Added README, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, docs, ADRs, CI workflow, verification scripts, screenshots, and Lore-protocol root commit 4aa2e9a. Evidence: .omx/ultragoal/evidence/09-open-source-docs.md and .omx/ultragoal/evidence/10-git-history.md; verification: docs-present shell check passed, git log shows Lore trailers, pnpm lint/typecheck/test/test:browser/secret:scan/fixture:scan/build and Rust core tests/clippy/fmt passed."
     },
     {
       "id": "G009-finish-with-a-beautiful-readme-that",
       "title": "Finish with a beautiful README that includes real dark/light screensh...",
       "objective": "Finish with a beautiful README that includes real dark/light screenshots captured from the finished app.",
-      "status": "pending",
-      "attempt": 0,
+      "status": "complete",
+      "attempt": 1,
       "createdAt": "2026-07-02T19:19:38.303Z",
-      "updatedAt": "2026-07-02T19:19:38.303Z"
+      "updatedAt": "2026-07-02T19:51:28.376Z",
+      "startedAt": "2026-07-02T19:51:05.317Z",
+      "completedAt": "2026-07-02T19:51:28.376Z",
+      "evidence": "README includes real dark and light screenshots captured from the implemented app preview, plus purpose, safety guarantees, setup, verification, data sources, privacy summary, and build instructions. Evidence: README.md, docs/screenshots/tokenstack-dashboard-dark.png, docs/screenshots/tokenstack-dashboard-light.png, .omx/ultragoal/evidence/09-open-source-docs.md; verification: pnpm test:browser refreshed screenshots and passed with no console errors; pnpm build passed."
     }
   ],
   "codexObjective": "Complete the durable ultragoal plan in .omx/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .omx/ultragoal/ledger.jsonl as the audit trail."
