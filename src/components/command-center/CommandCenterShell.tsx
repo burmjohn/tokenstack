@@ -4,9 +4,11 @@ import {
   CalendarDays,
   ChevronDown,
   Database,
+  Download,
   ExternalLink,
   Gauge,
   Github,
+  ImageDown,
   Info,
   LayoutDashboard,
   LockKeyhole,
@@ -26,8 +28,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { useDashboardSummary, useRefreshAll } from "../../features/dashboard/useDashboardSummary";
+import { buildDashboardUsageCsv, buildUsageCsvFilename } from "../../features/exports/csv";
+import { downloadTextFile } from "../../features/exports/download";
 import type { DataMode, DashboardSummary, MetricCoverage } from "../../lib/schemas/dashboard";
 import { cn } from "../../lib/utils";
+import { ExportPanel } from "./ExportPanel";
 
 type Theme = "dark" | "light";
 
@@ -39,11 +44,13 @@ export function CommandCenterShell() {
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("tokenstack-theme") as Theme | null) ?? "dark");
   const [dataMode, setDataMode] = useState<DataMode>("combined");
   const [autoRefreshDelayMs, setAutoRefreshDelayMs] = useState(AUTO_REFRESH_BASE_DELAY_MS);
+  const [isExportPanelOpen, setIsExportPanelOpen] = useState(false);
   const query = useDashboardSummary(dataMode);
   const refresh = useRefreshAll(dataMode);
   const refreshPendingRef = useRef(false);
   const refreshMutationRef = useRef(refresh.mutateAsync);
   const handleDataModeChange = (mode: DataMode) => {
+    setIsExportPanelOpen(false);
     setAutoRefreshDelayMs(AUTO_REFRESH_BASE_DELAY_MS);
     setDataMode(mode);
   };
@@ -96,6 +103,12 @@ export function CommandCenterShell() {
   }, [dataMode]);
 
   const summary = query.data;
+  const handleCsvExport = () => {
+    if (!summary) {
+      return;
+    }
+    downloadTextFile(buildUsageCsvFilename(), buildDashboardUsageCsv(summary), "text/csv;charset=utf-8");
+  };
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -111,7 +124,12 @@ export function CommandCenterShell() {
               lastRefresh={summary?.lastRefreshLabel ?? "not yet"}
               isRefreshing={refresh.isPending}
               onRefresh={() => refresh.mutate()}
+              hasSummary={Boolean(summary)}
+              isExportPanelOpen={isExportPanelOpen}
+              onToggleExportPanel={() => setIsExportPanelOpen((open) => !open)}
+              onExportCsv={handleCsvExport}
             />
+            {isExportPanelOpen && summary ? <ExportPanel summary={summary} onClose={() => setIsExportPanelOpen(false)} /> : null}
             {summary ? <DashboardContent summary={summary} /> : <DashboardLoading hasError={query.isError} />}
           </main>
           <SafetyFooter />
@@ -202,6 +220,10 @@ function DashboardHeader({
   lastRefresh,
   isRefreshing,
   onRefresh,
+  hasSummary,
+  isExportPanelOpen,
+  onToggleExportPanel,
+  onExportCsv,
 }: {
   dataMode: DataMode;
   setDataMode: (mode: DataMode) => void;
@@ -210,6 +232,10 @@ function DashboardHeader({
   lastRefresh: string;
   isRefreshing: boolean;
   onRefresh: () => void;
+  hasSummary: boolean;
+  isExportPanelOpen: boolean;
+  onToggleExportPanel: () => void;
+  onExportCsv: () => void;
 }) {
   return (
     <header className="mb-6 flex flex-wrap items-start justify-between gap-4" id="dashboard">
@@ -219,6 +245,28 @@ function DashboardHeader({
       </div>
       <div className="flex flex-wrap items-center justify-end gap-3">
         <span className="text-xs text-muted-foreground">Last refresh: {lastRefresh} <span className="text-mint">●</span></span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex" aria-label={!hasSummary ? "Export badge requires loaded dashboard data" : undefined} tabIndex={!hasSummary ? 0 : undefined}>
+              <Button variant="secondary" aria-label="Export badge" disabled={!hasSummary} onClick={onToggleExportPanel} className={cn(isExportPanelOpen && "border-primary/60 bg-primary/15 text-primary")}>
+                <ImageDown size={16} aria-hidden />
+                <span>Badge</span>
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{hasSummary ? "Create a shareable TokenStack badge." : "Exports require loaded dashboard data."}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex" aria-label={!hasSummary ? "Export CSV requires loaded dashboard data" : undefined} tabIndex={!hasSummary ? 0 : undefined}>
+              <Button variant="secondary" aria-label="Export CSV" disabled={!hasSummary} onClick={onExportCsv}>
+                <Download size={16} aria-hidden />
+                <span>CSV</span>
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>{hasSummary ? "Export dashboard usage bundle." : "Exports require loaded dashboard data."}</TooltipContent>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" aria-label="Refresh now" disabled={isRefreshing} onClick={onRefresh}>
