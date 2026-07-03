@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local read-only Codex usage and reset-credit command center.",
+  "description": "Local Codex usage and reset-credit command center.",
   "license": "MIT",
   "scripts": {
     "dev": "vite --host 127.0.0.1",

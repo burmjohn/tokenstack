@@ -39,4 +39,12 @@ describe("Tauri desktop packaging config", () => {
     expect(cargo).not.toContain("tauri-plugin-shell");
     expect(cargo).not.toContain("tauri-plugin-fs");
   });
+
+  it("keeps package metadata free of internal safety copy", async () => {
+    const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+
+    expect(packageJson.description).toContain("Local Codex usage");
+    expect(packageJson.description).not.toMatch(/read-only/i);
+    expect(packageJson.description).not.toContain("/consume");
+  });
 });
