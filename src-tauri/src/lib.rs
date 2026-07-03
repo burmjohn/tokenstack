@@ -6,6 +6,7 @@ mod auth;
 mod commands;
 mod connectors;
 mod db;
+mod desktop_menu;
 mod importers;
 mod safety;
 mod telemetry;
