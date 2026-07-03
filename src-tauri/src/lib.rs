@@ -6,6 +6,8 @@ mod auth;
 mod commands;
 mod connectors;
 mod db;
+#[cfg(feature = "tauri-app")]
+mod desktop;
 mod desktop_menu;
 mod importers;
 mod safety;
@@ -15,6 +17,10 @@ mod telemetry;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            desktop::install(app)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard_summary,
             commands::refresh_all
