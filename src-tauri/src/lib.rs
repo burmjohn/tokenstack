@@ -18,6 +18,9 @@ mod telemetry;
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_window_state::Builder::default().build())?;
             desktop::install(app)?;
             Ok(())
         })

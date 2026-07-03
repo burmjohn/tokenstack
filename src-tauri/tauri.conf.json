@@ -12,11 +12,12 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "TokenStack",
         "width": 1440,
         "height": 900,
-        "minWidth": 1180,
-        "minHeight": 760,
+        "minWidth": 1040,
+        "minHeight": 680,
         "resizable": true,
         "fullscreen": false
       }
@@ -29,7 +30,7 @@
     "active": true,
     "targets": ["nsis"],
     "category": "DeveloperTool",
-    "shortDescription": "Read-only Codex usage command center.",
-    "longDescription": "TokenStack imports local Codex history and read-only reset-credit snapshots without exposing auth secrets or mutating account state."
+    "shortDescription": "Local Codex usage command center.",
+    "longDescription": "TokenStack imports local Codex history and summarizes usage, reset-credit, and rate-limit snapshots on this device."
   }
 }
