@@ -3,7 +3,6 @@ use serde::Serialize;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DesktopCommand {
-    About,
     ExportBadge,
     ExportCsv,
     NavigateDashboard,
@@ -11,7 +10,6 @@ pub enum DesktopCommand {
     NavigateSetup,
     NavigateSources,
     NavigateUsage,
-    Quit,
     Refresh,
     ShowApp,
     ToggleTheme,
@@ -257,7 +255,8 @@ pub fn desktop_command_for_id(id: &str) -> Option<DesktopCommand> {
         .and_then(|entry| entry.command)
 }
 
-pub fn all_user_visible_desktop_copy() -> Vec<&'static str> {
+#[cfg(test)]
+fn all_user_visible_desktop_copy() -> Vec<&'static str> {
     APP_MENU_SECTIONS
         .iter()
         .flat_map(|section| {

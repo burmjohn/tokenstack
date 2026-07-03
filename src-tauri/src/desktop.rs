@@ -8,7 +8,7 @@ use crate::desktop_menu::{
     MENU_EVENT_NAME, TRAY_MENU_ENTRIES,
 };
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct DesktopMenuPayload {
     command: DesktopCommand,
 }
@@ -118,7 +118,6 @@ fn append_tray_menu_entry<'a>(
 fn handle_menu_id(app: &AppHandle, id: &str) {
     match desktop_command_for_id(id) {
         Some(DesktopCommand::ShowApp) => focus_main_window(app),
-        Some(DesktopCommand::Quit) => app.exit(0),
         Some(command) => {
             let _ = app.emit(MENU_EVENT_NAME, DesktopMenuPayload { command });
         }

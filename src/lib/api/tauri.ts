@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import { dashboardSummarySchema, type DashboardSummary, type DataMode } from "../schemas/dashboard";
-import { createMockDashboardSummary } from "./mockData";
+import {
+  dashboardSummarySchema,
+  setupDiagnosticsSchema,
+  type DashboardSummary,
+  type DataMode,
+  type SetupDiagnostics,
+} from "../schemas/dashboard";
+import { createMockDashboardSummary, createMockSetupDiagnostics } from "./mockData";
 
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: unknown;
@@ -27,4 +33,13 @@ export async function refreshAll(dataMode: DataMode): Promise<DashboardSummary> 
 
   const payload = await invoke("refresh_all", { dataMode });
   return dashboardSummarySchema.parse(payload);
+}
+
+export async function getSetupDiagnostics(): Promise<SetupDiagnostics> {
+  if (!isTauriRuntime()) {
+    return createMockSetupDiagnostics();
+  }
+
+  const payload = await invoke("get_setup_diagnostics");
+  return setupDiagnosticsSchema.parse(payload);
 }

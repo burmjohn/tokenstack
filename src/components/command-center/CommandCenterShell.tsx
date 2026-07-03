@@ -14,12 +14,12 @@ import { Progress } from "../ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
-import { useDashboardSummary, useRefreshAll } from "../../features/dashboard/useDashboardSummary";
+import { useDashboardSummary, useRefreshAll, useSetupDiagnostics } from "../../features/dashboard/useDashboardSummary";
 import { listenForDesktopMenuCommands } from "../../features/desktop/commands";
 import { installDesktopContextMenu } from "../../features/desktop/contextMenu";
 import { buildDashboardUsageCsv, buildUsageCsvFilename } from "../../features/exports/csv";
 import { downloadTextFile } from "../../features/exports/download";
-import type { DataMode, DashboardSummary, MetricCoverage } from "../../lib/schemas/dashboard";
+import type { DataMode, DashboardSummary, MetricCoverage, SetupDiagnostics } from "../../lib/schemas/dashboard";
 import { cn } from "../../lib/utils";
 import { createDesktopShellActionHandler } from "./desktopShellActions";
 import { DesktopStatusBar } from "./DesktopStatusBar";
@@ -296,20 +296,25 @@ function SetupSection({
   onRefresh: () => void;
   summary: DashboardSummary;
 }) {
+  const diagnostics = useSetupDiagnostics();
+
   return (
     <div className="grid grid-cols-[minmax(0,0.95fr)_minmax(320px,0.65fr)] items-start gap-4 max-[900px]:grid-cols-1">
-      <Card>
-        <CardHeader>
-          <CardTitle>Local data</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">Scan local history and refresh available account snapshots for the selected data mode.</p>
-          <Button type="button" onClick={onRefresh} disabled={isRefreshing} aria-label="Scan local data">
-            <RefreshCcw size={16} className={cn(isRefreshing && "animate-spin")} aria-hidden />
-            Scan local data
-          </Button>
-        </CardContent>
-      </Card>
+      <div className="space-y-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>Local data</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">Scan local history and refresh available account snapshots for the selected data mode.</p>
+            <Button type="button" onClick={onRefresh} disabled={isRefreshing} aria-label="Scan local data">
+              <RefreshCcw size={16} className={cn(isRefreshing && "animate-spin")} aria-hidden />
+              Scan local data
+            </Button>
+          </CardContent>
+        </Card>
+        <SetupDiagnosticsCard diagnostics={diagnostics.data} isLoading={diagnostics.isLoading} />
+      </div>
       <Card>
         <CardHeader>
           <CardTitle>Current configuration</CardTitle>
@@ -329,6 +334,98 @@ function SetupSection({
           </ul>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function SetupDiagnosticsCard({
+  diagnostics,
+  isLoading,
+}: {
+  diagnostics?: SetupDiagnostics;
+  isLoading: boolean;
+}) {
+  const latestImport = diagnostics?.latestImportRun;
+  const localRoots = diagnostics?.localRoots ?? [];
+  const connectorRuns = diagnostics?.connectorRuns ?? [];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Diagnostics</CardTitle>
+        <Badge tone={latestImport ? "success" : "muted"}>{latestImport ? "checked" : "waiting"}</Badge>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading && !diagnostics ? (
+          <p className="text-sm text-muted-foreground">Loading diagnostics</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 max-[560px]:grid-cols-1">
+              <DiagnosticPath label="Database" value={diagnostics?.databasePath ?? "Unavailable"} />
+              <DiagnosticPath label="Auth home" value={diagnostics?.authHome ?? "Unavailable"} />
+            </div>
+            <div>
+              <div className="mb-2 text-xs font-medium uppercase tracking-normal text-muted-foreground">Local Codex folders</div>
+              <ul className="space-y-2">
+                {localRoots.length > 0 ? (
+                  localRoots.map((root) => (
+                    <li key={root.path} className="flex min-w-0 items-center justify-between gap-3 text-xs">
+                      <span className="inline-flex min-w-0 items-center gap-2">
+                        <span className={cn("h-2 w-2 shrink-0 rounded-full", root.exists && root.isDirectory ? "bg-mint" : "bg-muted-foreground")} aria-hidden />
+                        <span className="truncate font-mono" title={root.path}>{root.path}</span>
+                      </span>
+                      <Badge tone={root.exists && root.isDirectory ? "success" : "muted"}>{root.exists && root.isDirectory ? "found" : "missing"}</Badge>
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-xs text-muted-foreground">No local roots configured</li>
+                )}
+              </ul>
+            </div>
+            {latestImport ? (
+              <dl className="grid grid-cols-4 gap-2 text-xs max-[560px]:grid-cols-2">
+                <DiagnosticCount label="Files" value={latestImport.filesSeen} />
+                <DiagnosticCount label="Events" value={latestImport.eventsSeen} />
+                <DiagnosticCount label="Imported" value={latestImport.eventsImported} />
+                <DiagnosticCount label="Warnings" value={latestImport.warningCount} />
+              </dl>
+            ) : (
+              <p className="text-xs text-muted-foreground">No import run recorded</p>
+            )}
+            {connectorRuns.length > 0 ? (
+              <ul className="space-y-2 border-t border-border pt-3">
+                {connectorRuns.map((run) => (
+                  <li key={`${run.connectorId}-${run.completedAtUtc}`} className="flex min-w-0 items-center justify-between gap-3 text-xs">
+                    <span className="truncate">{run.connectorId}</span>
+                    <span className="inline-flex min-w-0 items-center gap-2">
+                      <Badge tone={run.status === "complete" || run.status === "connected" ? "success" : "warning"}>{run.status}</Badge>
+                      {run.redactedErrorCode ? <span className="truncate text-muted-foreground">{run.redactedErrorCode}</span> : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DiagnosticPath({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate font-mono text-xs" title={value}>{value}</div>
+    </div>
+  );
+}
+
+function DiagnosticCount({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-[6px] border border-border bg-secondary/35 px-3 py-2">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="mt-1 text-sm font-semibold">{value.toLocaleString()}</dd>
     </div>
   );
 }

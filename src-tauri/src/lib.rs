@@ -9,6 +9,7 @@ mod db;
 #[cfg(feature = "tauri-app")]
 mod desktop;
 mod desktop_menu;
+mod discovery;
 mod importers;
 mod safety;
 mod telemetry;
@@ -26,6 +27,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard_summary,
+            commands::get_setup_diagnostics,
             commands::refresh_all
         ])
         .run(tauri::generate_context!())

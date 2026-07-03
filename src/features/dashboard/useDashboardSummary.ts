@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getDashboardSummary, refreshAll } from "../../lib/api/tauri";
+import { getDashboardSummary, getSetupDiagnostics, refreshAll } from "../../lib/api/tauri";
 import { queryKeys } from "../../lib/query/keys";
 import type { DataMode } from "../../lib/schemas/dashboard";
 
@@ -21,6 +21,15 @@ export function useRefreshAll(dataMode: DataMode) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.usage.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.sources.coverage(dataMode) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.connectors.status() });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.diagnostics.setup() });
     },
+  });
+}
+
+export function useSetupDiagnostics() {
+  return useQuery({
+    queryKey: queryKeys.diagnostics.setup(),
+    queryFn: () => getSetupDiagnostics(),
+    staleTime: 15_000,
   });
 }

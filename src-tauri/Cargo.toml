@@ -8,7 +8,7 @@ license = "MIT"
 
 [features]
 default = ["tauri-app"]
-tauri-app = ["dep:tauri", "dep:tauri-plugin-window-state"]
+tauri-app = ["dep:tauri", "tauri/tray-icon", "dep:tauri-plugin-window-state"]
 
 [lib]
 name = "tokenstack_lib"

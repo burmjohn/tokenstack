@@ -91,3 +91,35 @@ export const dashboardSummarySchema = z.object({
 
 export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
 export type MetricCoverage = z.infer<typeof coverageSchema>;
+
+export const setupDiagnosticsSchema = z.object({
+  appDataDir: z.string(),
+  databasePath: z.string(),
+  authHome: z.string(),
+  localRoots: z.array(
+    z.object({
+      path: z.string(),
+      exists: z.boolean(),
+      isDirectory: z.boolean(),
+    }),
+  ),
+  latestImportRun: z
+    .object({
+      completedAtUtc: z.string(),
+      filesSeen: z.number().int().nonnegative(),
+      eventsSeen: z.number().int().nonnegative(),
+      eventsImported: z.number().int().nonnegative(),
+      warningCount: z.number().int().nonnegative(),
+    })
+    .nullable(),
+  connectorRuns: z.array(
+    z.object({
+      connectorId: z.string(),
+      status: z.string(),
+      completedAtUtc: z.string(),
+      redactedErrorCode: z.string().nullable(),
+    }),
+  ),
+});
+
+export type SetupDiagnostics = z.infer<typeof setupDiagnosticsSchema>;

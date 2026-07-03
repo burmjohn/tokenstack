@@ -116,14 +116,23 @@ pub fn parse_usage_event(
     line_index: usize,
 ) -> anyhow::Result<Option<UsageEvent>> {
     let value: Value = serde_json::from_str(line)?;
-    let event_kind = value
+    let outer_event_kind = value
         .get("type")
         .or_else(|| value.get("event"))
         .or_else(|| value.get("kind"))
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    let event_kind = value
+        .pointer("/payload/type")
+        .and_then(Value::as_str)
+        .unwrap_or(outer_event_kind);
 
-    let usage = value.get("usage").unwrap_or(&value);
+    let usage = value
+        .get("usage")
+        .or_else(|| value.pointer("/payload/usage"))
+        .or_else(|| value.pointer("/payload/info/last_token_usage"))
+        .or_else(|| value.pointer("/payload/info/total_token_usage"))
+        .unwrap_or(&value);
     let input = number_at(usage, &["input_tokens", "input", "prompt_tokens"]);
     let output = number_at(usage, &["output_tokens", "output", "completion_tokens"]);
     let cache_read = number_at(usage, &["cache_read_tokens", "cached_input_tokens"]);
@@ -152,8 +161,11 @@ pub fn parse_usage_event(
         .get("session_id")
         .or_else(|| value.get("sessionId"))
         .or_else(|| value.get("conversation_id"))
+        .or_else(|| value.pointer("/payload/session_id"))
+        .or_else(|| value.pointer("/payload/sessionId"))
+        .or_else(|| value.pointer("/payload/conversation_id"))
         .and_then(Value::as_str)
-        .unwrap_or("unknown-session")
+        .unwrap_or(path_hash)
         .to_string();
 
     let source_uid = value
@@ -170,10 +182,14 @@ pub fn parse_usage_event(
         occurred_at_utc,
         model: value
             .get("model")
+            .or_else(|| value.pointer("/payload/model"))
+            .or_else(|| value.pointer("/payload/info/model"))
             .and_then(Value::as_str)
             .map(ToString::to_string),
         mode: value
             .get("mode")
+            .or_else(|| value.pointer("/payload/mode"))
+            .or_else(|| value.pointer("/payload/info/mode"))
             .and_then(Value::as_str)
             .map(ToString::to_string),
         input_tokens: input.unwrap_or(0),
@@ -272,6 +288,26 @@ mod tests {
         assert_eq!(summary.events_imported, 2);
         assert_eq!(count_usage_events(&conn).unwrap(), 2);
         assert_eq!(usage_total(&conn).unwrap(), 136);
+    }
+
+    #[test]
+    fn imports_nested_codex_token_count_events() {
+        let dir = tempdir().unwrap();
+        write_jsonl(
+            dir.path(),
+            "rollout-2026-07-02T18-00-00.jsonl",
+            &[
+                r#"{"timestamp":"2026-07-02T18:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":3,"reasoning_output_tokens":2,"total_tokens":19},"model":"gpt-5.5"},"mode":"executor"}}"#,
+            ],
+        );
+        let conn = open_memory().unwrap();
+        let summary = LocalHistoryImporter::new(vec![dir.path().to_path_buf()])
+            .import_into(&conn)
+            .unwrap();
+
+        assert_eq!(summary.events_imported, 1);
+        assert_eq!(count_usage_events(&conn).unwrap(), 1);
+        assert_eq!(usage_total(&conn).unwrap(), 19);
     }
 
     #[test]

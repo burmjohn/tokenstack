@@ -1,4 +1,4 @@
-import type { DashboardSummary, DataMode } from "../schemas/dashboard";
+import type { DashboardSummary, DataMode, SetupDiagnostics } from "../schemas/dashboard";
 
 const now = "2026-07-02T19:30:00Z";
 
@@ -135,5 +135,37 @@ export function createMockDashboardSummary(dataMode: DataMode = "combined"): Das
       expiresAtNy: "",
       timezone: "America/New_York",
     },
+  };
+}
+
+export function createMockSetupDiagnostics(): SetupDiagnostics {
+  return {
+    appDataDir: "~/.local/share/tokenstack",
+    databasePath: "~/.local/share/tokenstack/tokenstack.sqlite3",
+    authHome: "~",
+    localRoots: [
+      {
+        path: "~/.codex/sessions",
+        exists: false,
+        isDirectory: false,
+      },
+      {
+        path: "~/.codex/history",
+        exists: false,
+        isDirectory: false,
+      },
+      {
+        path: "~/.codex/archive",
+        exists: false,
+        isDirectory: false,
+      },
+      {
+        path: "~/.codex/archived_sessions",
+        exists: false,
+        isDirectory: false,
+      },
+    ],
+    latestImportRun: null,
+    connectorRuns: [],
   };
 }

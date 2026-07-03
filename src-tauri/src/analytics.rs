@@ -597,13 +597,7 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
     } else {
         0
     };
-    let local_last_run: Option<String> = conn
-        .query_row(
-            "SELECT completed_at_utc FROM import_runs ORDER BY id DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let local_run = latest_import_run(conn)?;
     let known_run = if data_mode.includes_remote() {
         latest_connector_run(conn, "known-reset-credit")?
     } else {
@@ -619,29 +613,22 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
         ConnectorDto {
             id: "local".to_string(),
             name: "Local Codex history".to_string(),
-            detail: if local_count > 0 {
-                format!("{local_count} local events imported")
-            } else {
-                "No local history imported yet".to_string()
-            },
-            status: if local_count > 0 {
-                "connected"
-            } else {
-                "unavailable"
-            }
-            .to_string(),
+            detail: local_connector_detail(local_count, local_run.as_ref()),
+            status: local_connector_status(local_count, local_run.as_ref()),
             read_only: true,
             safety_class: "Local".to_string(),
-            last_run_at_utc: local_last_run.unwrap_or_else(no_evidence_timestamp),
+            last_run_at_utc: local_run
+                .map(|run| run.completed_at_utc)
+                .unwrap_or_else(no_evidence_timestamp),
         },
         ConnectorDto {
             id: "known-reset-credit".to_string(),
             name: "Reset credits".to_string(),
-            detail: known_run
-                .as_ref()
-                .map(|_| "Latest reset-credit snapshot checked")
-                .unwrap_or("No reset-credit snapshot yet")
-                .to_string(),
+            detail: connector_detail(
+                known_run.as_ref(),
+                "Latest reset-credit snapshot checked",
+                "No reset-credit snapshot yet",
+            ),
             status: known_run
                 .as_ref()
                 .map(|run| connector_status(&run.status))
@@ -655,11 +642,11 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
         ConnectorDto {
             id: "rate-limit-windows".to_string(),
             name: "Rate-limit windows".to_string(),
-            detail: undocumented_run
-                .as_ref()
-                .map(|_| "Latest rate-limit window snapshot checked")
-                .unwrap_or("No rate-limit window snapshot yet")
-                .to_string(),
+            detail: connector_detail(
+                undocumented_run.as_ref(),
+                "Latest rate-limit window snapshot checked",
+                "No rate-limit window snapshot yet",
+            ),
             status: undocumented_run
                 .as_ref()
                 .map(|run| connector_status(&run.status))
@@ -671,6 +658,61 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
                 .unwrap_or_else(no_evidence_timestamp),
         },
     ])
+}
+
+struct ImportRunRow {
+    completed_at_utc: String,
+    files_seen: i64,
+    events_seen: i64,
+    events_imported: i64,
+}
+
+fn latest_import_run(conn: &Connection) -> rusqlite::Result<Option<ImportRunRow>> {
+    conn.query_row(
+        r#"
+        SELECT completed_at_utc, files_seen, events_seen, events_imported
+        FROM import_runs
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+        [],
+        |row| {
+            Ok(ImportRunRow {
+                completed_at_utc: row.get(0)?,
+                files_seen: row.get(1)?,
+                events_seen: row.get(2)?,
+                events_imported: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+}
+
+fn local_connector_detail(local_count: i64, run: Option<&ImportRunRow>) -> String {
+    if local_count > 0 {
+        return format!("{local_count} local events imported");
+    }
+    match run {
+        Some(run) if run.files_seen == 0 => {
+            "Checked local Codex folders; no parseable local history found".to_string()
+        }
+        Some(run) if run.events_seen > 0 && run.events_imported == 0 => {
+            "Checked local Codex history; no parseable token events found".to_string()
+        }
+        Some(_) => "Checked local Codex history; no parseable local history found".to_string(),
+        None => "No local history imported yet".to_string(),
+    }
+}
+
+fn local_connector_status(local_count: i64, run: Option<&ImportRunRow>) -> String {
+    if local_count > 0 {
+        "connected"
+    } else if run.is_some() {
+        "degraded"
+    } else {
+        "unavailable"
+    }
+    .to_string()
 }
 
 fn no_evidence_timestamp() -> String {
@@ -686,10 +728,28 @@ fn connector_status(status: &str) -> String {
     .to_string()
 }
 
+fn connector_detail(
+    run: Option<&ConnectorRunRow>,
+    success_detail: &str,
+    unavailable_detail: &str,
+) -> String {
+    match run {
+        None => unavailable_detail.to_string(),
+        Some(run) if matches!(run.status.as_str(), "complete" | "connected") => {
+            success_detail.to_string()
+        }
+        Some(run) if run.redacted_error_code.as_deref() == Some("auth_unavailable") => {
+            "Auth unavailable; snapshot refresh skipped".to_string()
+        }
+        Some(_) => "Snapshot refresh needs attention".to_string(),
+    }
+}
+
 struct ConnectorRunRow {
     started_at_utc: String,
     completed_at_utc: Option<String>,
     status: String,
+    redacted_error_code: Option<String>,
 }
 
 fn latest_connector_run(
@@ -698,7 +758,7 @@ fn latest_connector_run(
 ) -> rusqlite::Result<Option<ConnectorRunRow>> {
     conn.query_row(
         r#"
-        SELECT started_at_utc, completed_at_utc, status
+        SELECT started_at_utc, completed_at_utc, status, redacted_error_code
         FROM connector_runs
         WHERE connector_id = ?1
         ORDER BY id DESC
@@ -710,6 +770,7 @@ fn latest_connector_run(
                 started_at_utc: row.get(0)?,
                 completed_at_utc: row.get(1)?,
                 status: row.get(2)?,
+                redacted_error_code: row.get(3)?,
             })
         },
     )
@@ -959,6 +1020,32 @@ mod tests {
     }
 
     #[test]
+    fn local_connector_reports_checked_empty_history_after_refresh() {
+        let conn = open_memory().unwrap();
+        crate::db::insert_import_run(
+            &conn,
+            &crate::db::ImportRunSummary {
+                files_seen: 0,
+                events_seen: 0,
+                events_imported: 0,
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let summary = build_dashboard_summary(&conn, "combined").unwrap();
+        let local = summary
+            .connectors
+            .iter()
+            .find(|connector| connector.id == "local")
+            .unwrap();
+
+        assert_eq!(local.status, "degraded");
+        assert!(local.detail.contains("Checked"));
+        assert!(local.detail.contains("no parseable local history"));
+    }
+
+    #[test]
     fn missing_reset_connector_evidence_does_not_overstate_coverage() {
         let conn = open_memory().unwrap();
         let summary = build_dashboard_summary(&conn, "combined").unwrap();
@@ -973,6 +1060,32 @@ mod tests {
         assert_eq!(reset_metric.coverage.confidence, "unavailable");
         assert!(summary.reset_credits.is_empty());
         assert!(summary.rate_limit_windows.is_empty());
+    }
+
+    #[test]
+    fn failed_remote_connectors_show_sanitized_error_details() {
+        let conn = open_memory().unwrap();
+        crate::db::insert_connector_run(
+            &conn,
+            "known-reset-credit",
+            "failed",
+            Some("known-reset-credit"),
+            None,
+            Some("auth_unavailable"),
+            Some("auth document is unavailable"),
+        )
+        .unwrap();
+
+        let summary = build_dashboard_summary(&conn, "combined").unwrap();
+        let connector = summary
+            .connectors
+            .iter()
+            .find(|connector| connector.id == "known-reset-credit")
+            .unwrap();
+
+        assert_eq!(connector.status, "degraded");
+        assert!(connector.detail.contains("Auth unavailable"));
+        assert!(!connector.detail.contains("auth.json"));
     }
 
     #[test]

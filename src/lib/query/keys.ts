@@ -25,6 +25,9 @@ export const queryKeys = {
   connectors: {
     status: () => ["connectors", "status"] as const,
   },
+  diagnostics: {
+    setup: () => ["diagnostics", "setup"] as const,
+  },
   refresh: {
     status: () => ["refresh", "status"] as const,
   },

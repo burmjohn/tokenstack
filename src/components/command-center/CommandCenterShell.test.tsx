@@ -96,6 +96,9 @@ describe("CommandCenterShell", () => {
     await user.click(screen.getByRole("button", { name: "Setup" }));
     expect(screen.getByRole("heading", { name: "Setup" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Scan local data" })).toBeEnabled();
+    expect(await screen.findByText("Diagnostics")).toBeInTheDocument();
+    expect(screen.getByText("Local Codex folders")).toBeInTheDocument();
+    expect(screen.getByText("No import run recorded")).toBeInTheDocument();
   });
 
   it("toggles theme and runs refresh without duplicate controls", async () => {
