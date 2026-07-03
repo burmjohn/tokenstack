@@ -1,13 +1,30 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { DesktopMenuCommand } from "../../features/desktop/commands";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommandCenterShell } from "./CommandCenterShell";
+
+const desktopBridge = vi.hoisted(() => ({
+  handler: undefined as ((command: DesktopMenuCommand) => void) | undefined,
+}));
+
+vi.mock("../../features/desktop/commands", () => ({
+  listenForDesktopMenuCommands: vi.fn(async (handler) => {
+    desktopBridge.handler = handler;
+    return vi.fn();
+  }),
+}));
+
+vi.mock("../../features/desktop/contextMenu", () => ({
+  installDesktopContextMenu: vi.fn(() => vi.fn()),
+}));
 
 const originalCreateObjectURL = URL.createObjectURL;
 const originalRevokeObjectURL = URL.revokeObjectURL;
 
 afterEach(() => {
+  desktopBridge.handler = undefined;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   restoreUrlApi("createObjectURL", originalCreateObjectURL);
@@ -138,6 +155,26 @@ describe("CommandCenterShell", () => {
     }
     expect(blob.type).toBe("image/png");
     await waitFor(() => expect(screen.queryByRole("region", { name: "Badge export panel" })).not.toBeInTheDocument());
+  });
+
+  it("responds to native desktop menu commands", async () => {
+    installDownloadMocks();
+    localStorage.setItem("tokenstack-theme", "dark");
+    renderShell();
+    await screen.findByText("Daily token usage");
+    await waitFor(() => expect(desktopBridge.handler).toBeTypeOf("function"));
+
+    await act(async () => desktopBridge.handler?.("navigate-setup"));
+    expect(screen.getByRole("heading", { name: "Setup" })).toBeInTheDocument();
+
+    await act(async () => desktopBridge.handler?.("toggle-theme"));
+    expect(document.documentElement.dataset.theme).toBe("light");
+
+    await act(async () => desktopBridge.handler?.("export-badge"));
+    expect(await screen.findByRole("region", { name: "Badge export panel" })).toBeInTheDocument();
+
+    await act(async () => desktopBridge.handler?.("export-csv"));
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled());
   });
 });
 

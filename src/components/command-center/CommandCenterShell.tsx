@@ -8,14 +8,12 @@ import {
   Gauge,
   ImageDown,
   Info,
-  LayoutDashboard,
   Moon,
   RefreshCcw,
-  ServerCog,
   Sun,
   Zap,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -24,49 +22,21 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { useDashboardSummary, useRefreshAll } from "../../features/dashboard/useDashboardSummary";
+import { listenForDesktopMenuCommands } from "../../features/desktop/commands";
+import { installDesktopContextMenu } from "../../features/desktop/contextMenu";
 import { buildDashboardUsageCsv, buildUsageCsvFilename } from "../../features/exports/csv";
 import { downloadTextFile } from "../../features/exports/download";
 import type { DataMode, DashboardSummary, MetricCoverage } from "../../lib/schemas/dashboard";
 import { cn } from "../../lib/utils";
+import { createDesktopShellActionHandler } from "./desktopShellActions";
 import { ExportPanel } from "./ExportPanel";
+import { NAV_ITEMS, SECTION_COPY, type NavSection } from "./sectionModel";
 
 type Theme = "dark" | "light";
-type NavSection = "dashboard" | "usage" | "resets" | "sources" | "setup";
 
 const metricIcons = [Activity, CalendarDays, BarChart3, Zap, RefreshCcw];
 const AUTO_REFRESH_BASE_DELAY_MS = 60_000;
 const AUTO_REFRESH_MAX_DELAY_MS = 300_000;
-
-const NAV_ITEMS = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { id: "usage", label: "Usage", icon: BarChart3 },
-  { id: "resets", label: "Reset Credits", icon: RefreshCcw },
-  { id: "sources", label: "Sources", icon: Database },
-  { id: "setup", label: "Setup", icon: ServerCog },
-] as const;
-
-const SECTION_COPY: Record<NavSection, { heading: string; description: string }> = {
-  dashboard: {
-    heading: "Dashboard",
-    description: "Local Codex usage, reset credits, and source coverage.",
-  },
-  usage: {
-    heading: "Usage",
-    description: "Review imported local usage and session history.",
-  },
-  resets: {
-    heading: "Reset Credits",
-    description: "Track reset-credit snapshots when they are available.",
-  },
-  sources: {
-    heading: "Sources",
-    description: "See which local and remote sources currently have evidence.",
-  },
-  setup: {
-    heading: "Setup",
-    description: "Connect local history and refresh available snapshots.",
-  },
-};
 
 export function CommandCenterShell() {
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("tokenstack-theme") as Theme | null) ?? "dark");
@@ -132,12 +102,56 @@ export function CommandCenterShell() {
   }, [dataMode]);
 
   const summary = query.data;
-  const handleCsvExport = () => {
+  const handleCsvExport = useCallback(() => {
     if (!summary) {
       return;
     }
     downloadTextFile(buildUsageCsvFilename(), buildDashboardUsageCsv(summary), "text/csv;charset=utf-8");
-  };
+  }, [summary]);
+  const openBadgeExport = useCallback(() => {
+    if (summary) {
+      setIsExportPanelOpen(true);
+    }
+  }, [summary]);
+  const toggleBadgeExportPanel = useCallback(() => {
+    if (summary) {
+      setIsExportPanelOpen((open) => !open);
+    }
+  }, [summary]);
+  const refreshNow = useCallback(() => refresh.mutate(), [refresh]);
+  const toggleTheme = useCallback(() => setTheme((current) => (current === "dark" ? "light" : "dark")), []);
+  const desktopActionHandler = useMemo(
+    () =>
+      createDesktopShellActionHandler({
+        exportBadge: openBadgeExport,
+        exportCsv: handleCsvExport,
+        navigate: setActiveSection,
+        refresh: refreshNow,
+        toggleTheme,
+      }),
+    [handleCsvExport, openBadgeExport, refreshNow, toggleTheme],
+  );
+
+  useEffect(() => {
+    let cleanup: (() => void) | null = null;
+    let cancelled = false;
+
+    void listenForDesktopMenuCommands(desktopActionHandler).then((unlisten) => {
+      if (cancelled) {
+        unlisten?.();
+        return;
+      }
+      cleanup = unlisten;
+    });
+
+    const removeContextMenu = installDesktopContextMenu(desktopActionHandler);
+
+    return () => {
+      cancelled = true;
+      cleanup?.();
+      removeContextMenu();
+    };
+  }, [desktopActionHandler]);
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -156,13 +170,13 @@ export function CommandCenterShell() {
               dataMode={dataMode}
               setDataMode={handleDataModeChange}
               theme={theme}
-              setTheme={setTheme}
+              onToggleTheme={toggleTheme}
               lastRefresh={summary?.lastRefreshLabel ?? "not yet"}
               isRefreshing={refresh.isPending}
-              onRefresh={() => refresh.mutate()}
+              onRefresh={refreshNow}
               hasSummary={Boolean(summary)}
               isExportPanelOpen={isExportPanelOpen}
-              onToggleExportPanel={() => setIsExportPanelOpen((open) => !open)}
+              onToggleExportPanel={toggleBadgeExportPanel}
               onExportCsv={handleCsvExport}
             />
             <MobileSectionNav activeSection={activeSection} setActiveSection={setActiveSection} />
@@ -300,7 +314,7 @@ function DashboardHeader({
   dataMode,
   setDataMode,
   theme,
-  setTheme,
+  onToggleTheme,
   lastRefresh,
   isRefreshing,
   onRefresh,
@@ -313,7 +327,7 @@ function DashboardHeader({
   dataMode: DataMode;
   setDataMode: (mode: DataMode) => void;
   theme: Theme;
-  setTheme: (theme: Theme) => void;
+  onToggleTheme: () => void;
   lastRefresh: string;
   isRefreshing: boolean;
   onRefresh: () => void;
@@ -379,7 +393,7 @@ function DashboardHeader({
           <option value="local">Local</option>
           <option value="remote">Remote</option>
         </select>
-        <Button variant="secondary" size="icon" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+        <Button variant="secondary" size="icon" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`} onClick={onToggleTheme}>
           {theme === "dark" ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
         </Button>
       </div>
