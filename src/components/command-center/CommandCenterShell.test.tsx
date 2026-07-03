@@ -101,6 +101,26 @@ describe("CommandCenterShell", () => {
     expect(screen.getByText("No import run recorded")).toBeInTheDocument();
   });
 
+  it("downloads setup diagnostics as JSON", async () => {
+    const user = userEvent.setup();
+    const download = installDownloadMocks();
+    renderShell();
+    await screen.findByText("Daily token usage");
+
+    await user.click(screen.getByRole("button", { name: "Setup" }));
+    await user.click(await screen.findByRole("button", { name: "Export diagnostics" }));
+
+    await waitFor(() => expect(download.anchorClick).toHaveBeenCalledTimes(1));
+    expect(download.getAnchor()?.download).toMatch(/^tokenstack-diagnostics-\d{4}-\d{2}-\d{2}\.json$/);
+
+    const blob = download.createObjectURL.mock.calls[0]?.[0];
+    if (!blob) {
+      throw new Error("Diagnostics export did not create a blob.");
+    }
+    expect(blob.type).toBe("application/json;charset=utf-8");
+    await expect(readBlobText(blob)).resolves.toContain('"localRoots"');
+  });
+
   it("toggles theme and runs refresh without duplicate controls", async () => {
     const user = userEvent.setup();
     localStorage.setItem("tokenstack-theme", "dark");

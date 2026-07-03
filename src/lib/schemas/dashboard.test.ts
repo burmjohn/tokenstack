@@ -20,6 +20,9 @@ describe("setupDiagnosticsSchema", () => {
       appDataDir: "C:\\Users\\John\\AppData\\Roaming\\TokenStack",
       databasePath: "C:\\Users\\John\\AppData\\Roaming\\TokenStack\\tokenstack.sqlite3",
       authHome: "C:\\Users\\John",
+      usageEventCount: 307,
+      usageTotalTokens: 22800000,
+      sourceDocumentCount: 23,
       localRoots: [
         {
           path: "C:\\Users\\John\\.codex\\sessions",
@@ -33,17 +36,23 @@ describe("setupDiagnosticsSchema", () => {
         eventsSeen: 2,
         eventsImported: 1,
         warningCount: 1,
+        warningSamples: ["history.jsonl:2 unknown event shape skipped (type=message; keys=timestamp,type)"],
       },
       connectorRuns: [
         {
           connectorId: "known-reset-credit",
           status: "failed",
+          endpointId: "known-reset-credit",
+          httpStatus: null,
           completedAtUtc: "2026-07-03T12:00:00Z",
           redactedErrorCode: "auth_unavailable",
+          redactedErrorMessage: "auth document is unavailable",
         },
       ],
     };
 
-    expect(setupDiagnosticsSchema.parse(payload).localRoots[0].exists).toBe(true);
+    const diagnostics = setupDiagnosticsSchema.parse(payload);
+    expect(diagnostics.localRoots[0].exists).toBe(true);
+    expect(diagnostics.latestImportRun?.warningSamples[0]).toContain("type=message");
   });
 });

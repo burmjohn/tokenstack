@@ -56,10 +56,9 @@ impl LocalHistoryImporter {
                             summary.events_imported += 1;
                         }
                     }
-                    Ok(None) => summary.warnings.push(format!(
-                        "{safe_label}:{} unknown event shape skipped",
-                        line_index + 1
-                    )),
+                    Ok(None) => summary
+                        .warnings
+                        .push(unknown_event_shape_warning(safe_label, line_index, line)),
                     Err(error) => {
                         summary
                             .warnings
@@ -202,6 +201,64 @@ pub fn parse_usage_event(
     }))
 }
 
+fn unknown_event_shape_warning(safe_label: &str, line_index: usize, line: &str) -> String {
+    let shape = serde_json::from_str::<Value>(line)
+        .map(|value| summarize_unknown_shape(&value))
+        .unwrap_or_else(|_| "invalid-json".to_string());
+    format!(
+        "{safe_label}:{} unknown event shape skipped ({shape})",
+        line_index + 1
+    )
+}
+
+fn summarize_unknown_shape(value: &Value) -> String {
+    let mut parts = Vec::new();
+    push_shape_string(&mut parts, "type", value.get("type"));
+    push_shape_string(&mut parts, "kind", value.get("kind"));
+    push_shape_string(&mut parts, "event", value.get("event"));
+    push_shape_string(&mut parts, "payload.type", value.pointer("/payload/type"));
+    push_shape_keys(&mut parts, "keys", value);
+    if let Some(payload) = value.get("payload") {
+        push_shape_keys(&mut parts, "payload.keys", payload);
+    }
+    if let Some(info) = value.pointer("/payload/info") {
+        push_shape_keys(&mut parts, "payload.info.keys", info);
+    }
+    if parts.is_empty() {
+        "non-object-json".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn push_shape_string(parts: &mut Vec<String>, label: &str, value: Option<&Value>) {
+    if let Some(value) = value
+        .and_then(Value::as_str)
+        .filter(|value| is_safe_shape_value(value))
+    {
+        parts.push(format!("{label}={value}"));
+    }
+}
+
+fn push_shape_keys(parts: &mut Vec<String>, label: &str, value: &Value) {
+    if let Some(object) = value.as_object() {
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys.truncate(16);
+        if !keys.is_empty() {
+            parts.push(format!("{label}={}", keys.join(",")));
+        }
+    }
+}
+
+fn is_safe_shape_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | ':')
+        })
+}
+
 fn number_at(value: &Value, keys: &[&str]) -> Option<i64> {
     keys.iter()
         .find_map(|key| value.get(*key))
@@ -318,7 +375,7 @@ mod tests {
             "history.jsonl",
             &[
                 r#"{"id":"event-1","type":"token_count","timestamp":"2026-07-02T18:00:00Z","usage":{"total_tokens":100}}"#,
-                r#"{"type":"message","timestamp":"2026-07-02T18:01:00Z","text":"no tokens"}"#,
+                r#"{"type":"message","timestamp":"2026-07-02T18:01:00Z","text":"secret local text","payload":{"type":"assistant_message","content":"secret payload"}}"#,
             ],
         );
         let conn = open_memory().unwrap();
@@ -329,6 +386,11 @@ mod tests {
         assert_eq!(summary.events_seen, 2);
         assert_eq!(summary.events_imported, 1);
         assert_eq!(summary.warnings.len(), 1);
+        assert!(summary.warnings[0].contains("type=message"));
+        assert!(summary.warnings[0].contains("payload.type=assistant_message"));
+        assert!(summary.warnings[0].contains("keys=payload,text,timestamp,type"));
+        assert!(!summary.warnings[0].contains("secret local text"));
+        assert!(!summary.warnings[0].contains("secret payload"));
     }
 
     #[test]

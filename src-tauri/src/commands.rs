@@ -39,6 +39,9 @@ pub struct SetupDiagnosticsDto {
     pub app_data_dir: String,
     pub database_path: String,
     pub auth_home: String,
+    pub usage_event_count: i64,
+    pub usage_total_tokens: i64,
+    pub source_document_count: i64,
     pub local_roots: Vec<LocalRootDiagnosticsDto>,
     pub latest_import_run: Option<ImportRunDiagnosticsDto>,
     pub connector_runs: Vec<ConnectorRunDiagnosticsDto>,
@@ -60,6 +63,7 @@ pub struct ImportRunDiagnosticsDto {
     pub events_seen: i64,
     pub events_imported: i64,
     pub warning_count: usize,
+    pub warning_samples: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,7 +72,10 @@ pub struct ConnectorRunDiagnosticsDto {
     pub connector_id: String,
     pub status: String,
     pub completed_at_utc: String,
+    pub endpoint_id: Option<String>,
+    pub http_status: Option<i64>,
     pub redacted_error_code: Option<String>,
+    pub redacted_error_message: Option<String>,
 }
 
 #[tauri::command]
@@ -96,20 +103,32 @@ fn setup_diagnostics_from_parts(
     let database_path = app_data_dir.join("tokenstack.sqlite3");
     let local_roots = roots.into_iter().map(local_root_diagnostics).collect();
 
-    let (latest_import_run, connector_runs) = if database_path.exists() {
+    let (
+        latest_import_run,
+        connector_runs,
+        usage_event_count,
+        usage_total_tokens,
+        source_document_count,
+    ) = if database_path.exists() {
         let conn = open_path(&database_path).map_err(|error| error.to_string())?;
         (
             latest_import_run_diagnostics(&conn).map_err(|error| error.to_string())?,
             connector_run_diagnostics(&conn).map_err(|error| error.to_string())?,
+            count_rows(&conn, "usage_events").map_err(|error| error.to_string())?,
+            usage_total_tokens(&conn).map_err(|error| error.to_string())?,
+            count_rows(&conn, "source_documents").map_err(|error| error.to_string())?,
         )
     } else {
-        (None, Vec::new())
+        (None, Vec::new(), 0, 0, 0)
     };
 
     Ok(SetupDiagnosticsDto {
         app_data_dir: path_label(&app_data_dir),
         database_path: path_label(&database_path),
         auth_home: path_label(&auth_home),
+        usage_event_count,
+        usage_total_tokens,
+        source_document_count,
         local_roots,
         latest_import_run,
         connector_runs,
@@ -142,15 +161,15 @@ fn latest_import_run_diagnostics(
         [],
         |row| {
             let warnings_json: String = row.get(4)?;
-            let warning_count = serde_json::from_str::<Vec<String>>(&warnings_json)
-                .map(|warnings| warnings.len())
-                .unwrap_or(0);
+            let warnings = parse_warning_samples(&warnings_json);
+            let warning_count = warnings.len();
             Ok(ImportRunDiagnosticsDto {
                 completed_at_utc: row.get(0)?,
                 files_seen: row.get(1)?,
                 events_seen: row.get(2)?,
                 events_imported: row.get(3)?,
                 warning_count,
+                warning_samples: warnings.into_iter().take(20).collect(),
             })
         },
     )
@@ -162,7 +181,8 @@ fn connector_run_diagnostics(
 ) -> rusqlite::Result<Vec<ConnectorRunDiagnosticsDto>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT connector_id, status, COALESCE(completed_at_utc, started_at_utc), redacted_error_code
+        SELECT connector_id, status, COALESCE(completed_at_utc, started_at_utc),
+               endpoint_id, http_status, redacted_error_code, redacted_error_message
         FROM connector_runs
         ORDER BY id DESC
         LIMIT 8
@@ -173,10 +193,30 @@ fn connector_run_diagnostics(
             connector_id: row.get(0)?,
             status: row.get(1)?,
             completed_at_utc: row.get(2)?,
-            redacted_error_code: row.get(3)?,
+            endpoint_id: row.get(3)?,
+            http_status: row.get(4)?,
+            redacted_error_code: row.get(5)?,
+            redacted_error_message: row.get(6)?,
         })
     })?;
     rows.collect()
+}
+
+fn parse_warning_samples(warnings_json: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(warnings_json).unwrap_or_default()
+}
+
+fn count_rows(conn: &Connection, table: &str) -> rusqlite::Result<i64> {
+    let query = format!("SELECT COUNT(*) FROM {table}");
+    conn.query_row(&query, [], |row| row.get(0))
+}
+
+fn usage_total_tokens(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events",
+        [],
+        |row| row.get(0),
+    )
 }
 
 fn path_label(path: &Path) -> String {
@@ -414,6 +454,9 @@ mod tests {
             auth_home.path().display().to_string()
         );
         assert!(diagnostics.latest_import_run.is_none());
+        assert_eq!(diagnostics.usage_event_count, 0);
+        assert_eq!(diagnostics.usage_total_tokens, 0);
+        assert_eq!(diagnostics.source_document_count, 0);
         assert_eq!(diagnostics.local_roots.len(), 2);
         assert!(diagnostics.local_roots[0].exists);
         assert!(diagnostics.local_roots[0].is_directory);
@@ -440,7 +483,10 @@ mod tests {
                 files_seen: 4,
                 events_seen: 3,
                 events_imported: 2,
-                warnings: vec!["ignored unknown event shape".to_string()],
+                warnings: vec![
+                    "history.jsonl:2 unknown event shape skipped (type=message; keys=timestamp,type)"
+                        .to_string(),
+                ],
             },
         )
         .unwrap();
@@ -468,14 +514,29 @@ mod tests {
         assert_eq!(latest_import.events_seen, 3);
         assert_eq!(latest_import.events_imported, 2);
         assert_eq!(latest_import.warning_count, 1);
+        assert_eq!(latest_import.warning_samples.len(), 1);
+        assert!(latest_import.warning_samples[0].contains("type=message"));
+        assert_eq!(diagnostics.usage_event_count, 0);
+        assert_eq!(diagnostics.usage_total_tokens, 0);
+        assert_eq!(diagnostics.source_document_count, 0);
         assert_eq!(diagnostics.connector_runs.len(), 1);
         assert_eq!(
             diagnostics.connector_runs[0].connector_id,
             "known-reset-credit"
         );
         assert_eq!(
+            diagnostics.connector_runs[0].endpoint_id.as_deref(),
+            Some("known-reset-credit")
+        );
+        assert_eq!(
             diagnostics.connector_runs[0].redacted_error_code.as_deref(),
             Some("auth_unavailable")
+        );
+        assert_eq!(
+            diagnostics.connector_runs[0]
+                .redacted_error_message
+                .as_deref(),
+            Some("auth document is unavailable")
         );
     }
 }

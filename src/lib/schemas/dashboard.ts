@@ -96,6 +96,9 @@ export const setupDiagnosticsSchema = z.object({
   appDataDir: z.string(),
   databasePath: z.string(),
   authHome: z.string(),
+  usageEventCount: z.number().int().nonnegative(),
+  usageTotalTokens: z.number().int().nonnegative(),
+  sourceDocumentCount: z.number().int().nonnegative(),
   localRoots: z.array(
     z.object({
       path: z.string(),
@@ -110,14 +113,18 @@ export const setupDiagnosticsSchema = z.object({
       eventsSeen: z.number().int().nonnegative(),
       eventsImported: z.number().int().nonnegative(),
       warningCount: z.number().int().nonnegative(),
+      warningSamples: z.array(z.string()),
     })
     .nullable(),
   connectorRuns: z.array(
     z.object({
       connectorId: z.string(),
       status: z.string(),
+      endpointId: z.string().nullable(),
+      httpStatus: z.number().int().nullable(),
       completedAtUtc: z.string(),
       redactedErrorCode: z.string().nullable(),
+      redactedErrorMessage: z.string().nullable(),
     }),
   ),
 });

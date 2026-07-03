@@ -2,6 +2,7 @@ import {
   Activity,
   BarChart3,
   CalendarDays,
+  Download,
   Info,
   RefreshCcw,
   Zap,
@@ -18,6 +19,7 @@ import { useDashboardSummary, useRefreshAll, useSetupDiagnostics } from "../../f
 import { listenForDesktopMenuCommands } from "../../features/desktop/commands";
 import { installDesktopContextMenu } from "../../features/desktop/contextMenu";
 import { buildDashboardUsageCsv, buildUsageCsvFilename } from "../../features/exports/csv";
+import { buildSetupDiagnosticsFilename, buildSetupDiagnosticsJson } from "../../features/exports/diagnostics";
 import { downloadTextFile } from "../../features/exports/download";
 import type { DataMode, DashboardSummary, MetricCoverage, SetupDiagnostics } from "../../lib/schemas/dashboard";
 import { cn } from "../../lib/utils";
@@ -348,12 +350,28 @@ function SetupDiagnosticsCard({
   const latestImport = diagnostics?.latestImportRun;
   const localRoots = diagnostics?.localRoots ?? [];
   const connectorRuns = diagnostics?.connectorRuns ?? [];
+  const exportDiagnostics = () => {
+    if (!diagnostics) {
+      return;
+    }
+    downloadTextFile(
+      buildSetupDiagnosticsFilename(),
+      buildSetupDiagnosticsJson(diagnostics),
+      "application/json;charset=utf-8",
+    );
+  };
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Diagnostics</CardTitle>
-        <Badge tone={latestImport ? "success" : "muted"}>{latestImport ? "checked" : "waiting"}</Badge>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="secondary" size="sm" onClick={exportDiagnostics} disabled={!diagnostics} aria-label="Export diagnostics">
+            <Download size={14} aria-hidden />
+            Export diagnostics
+          </Button>
+          <Badge tone={latestImport ? "success" : "muted"}>{latestImport ? "checked" : "waiting"}</Badge>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading && !diagnostics ? (
@@ -392,6 +410,21 @@ function SetupDiagnosticsCard({
             ) : (
               <p className="text-xs text-muted-foreground">No import run recorded</p>
             )}
+            <dl className="grid grid-cols-3 gap-2 text-xs max-[560px]:grid-cols-1">
+              <DiagnosticCount label="Stored events" value={diagnostics?.usageEventCount ?? 0} />
+              <DiagnosticCount label="Stored tokens" value={diagnostics?.usageTotalTokens ?? 0} />
+              <DiagnosticCount label="Source files" value={diagnostics?.sourceDocumentCount ?? 0} />
+            </dl>
+            {latestImport?.warningSamples.length ? (
+              <div className="space-y-2 border-t border-border pt-3">
+                <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Warning samples</div>
+                <ul className="space-y-1">
+                  {latestImport.warningSamples.slice(0, 3).map((warning) => (
+                    <li key={warning} className="truncate font-mono text-xs text-muted-foreground" title={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {connectorRuns.length > 0 ? (
               <ul className="space-y-2 border-t border-border pt-3">
                 {connectorRuns.map((run) => (
@@ -399,6 +432,7 @@ function SetupDiagnosticsCard({
                     <span className="truncate">{run.connectorId}</span>
                     <span className="inline-flex min-w-0 items-center gap-2">
                       <Badge tone={run.status === "complete" || run.status === "connected" ? "success" : "warning"}>{run.status}</Badge>
+                      {run.redactedErrorMessage ? <span className="truncate text-muted-foreground" title={run.redactedErrorMessage}>{run.redactedErrorMessage}</span> : null}
                       {run.redactedErrorCode ? <span className="truncate text-muted-foreground">{run.redactedErrorCode}</span> : null}
                     </span>
                   </li>

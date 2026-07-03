@@ -143,6 +143,9 @@ export function createMockSetupDiagnostics(): SetupDiagnostics {
     appDataDir: "~/.local/share/tokenstack",
     databasePath: "~/.local/share/tokenstack/tokenstack.sqlite3",
     authHome: "~",
+    usageEventCount: 0,
+    usageTotalTokens: 0,
+    sourceDocumentCount: 0,
     localRoots: [
       {
         path: "~/.codex/sessions",

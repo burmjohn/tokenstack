@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createMockDashboardSummary } from "./mockData";
+import { createMockDashboardSummary, createMockSetupDiagnostics } from "./mockData";
 
 describe("createMockDashboardSummary", () => {
   it("uses an empty local dashboard instead of fake usage values", () => {
@@ -11,5 +11,17 @@ describe("createMockDashboardSummary", () => {
     expect(summary.rateLimitWindows).toEqual([]);
     expect(summary.nextReset.label).toBe("No reset-credit snapshot");
     expect(summary.connectors.every((connector) => connector.status === "unavailable")).toBe(true);
+  });
+});
+
+describe("createMockSetupDiagnostics", () => {
+  it("uses empty sanitized diagnostics outside Tauri", () => {
+    const diagnostics = createMockSetupDiagnostics();
+
+    expect(diagnostics.localRoots.length).toBeGreaterThan(0);
+    expect(diagnostics.latestImportRun).toBeNull();
+    expect(diagnostics.connectorRuns).toEqual([]);
+    expect(diagnostics.usageEventCount).toBe(0);
+    expect(diagnostics.usageTotalTokens).toBe(0);
   });
 });
