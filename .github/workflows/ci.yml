@@ -52,3 +52,9 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tauri build --target x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tokenstack-windows-x64-setup
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/TokenStack_*_x64-setup.exe
+          if-no-files-found: error
+          retention-days: 30
