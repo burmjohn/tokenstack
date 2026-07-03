@@ -233,12 +233,12 @@ mod tests {
             .find(|connector| connector.id == "known-reset-credit")
             .unwrap();
         assert_eq!(connector.status, "degraded");
-        let undocumented = reopened
+        let rate_limit_windows = reopened
             .connectors
             .iter()
-            .find(|connector| connector.id == "undocumented-ro")
+            .find(|connector| connector.id == "rate-limit-windows")
             .unwrap();
-        assert_eq!(undocumented.status, "degraded");
+        assert_eq!(rate_limit_windows.status, "degraded");
 
         let conn = open_app_database(app_dir.path()).unwrap();
         let stored_endpoint: String = conn
