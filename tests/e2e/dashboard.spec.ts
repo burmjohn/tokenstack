@@ -12,9 +12,28 @@ test("dashboard renders dark and light command center screenshots without consol
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  await expect(page.getByRole("toolbar", { name: "TokenStack controls" })).toBeVisible();
+  await expect(page.getByRole("status", { name: "TokenStack status" })).toBeVisible();
+  await expect(page.getByText("Never /consume")).toHaveCount(0);
   await expect(page.getByText("/consume")).toHaveCount(0);
+  await expect(page.getByText("Read-only")).toHaveCount(0);
+  await expect(page.getByText("No token display")).toHaveCount(0);
+  await expect(page.getByText("1.2k")).toHaveCount(0);
+  await expect(page.getByText("John B")).toHaveCount(0);
   await expect(page.getByText("Daily token usage")).toBeVisible();
   await expect(page.getByText("America/New_York").first()).toBeVisible();
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 1024, height: 768 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect(page.getByRole("toolbar", { name: "TokenStack controls" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+  }
+
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole("button", { name: "Setup" }).click();
   await expect(page.getByRole("heading", { name: "Setup" })).toBeVisible();
   await page.getByRole("button", { name: "Dashboard" }).click();
