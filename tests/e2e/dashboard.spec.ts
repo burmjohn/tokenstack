@@ -12,9 +12,13 @@ test("dashboard renders dark and light command center screenshots without consol
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
-  await expect(page.getByText("Never /consume")).toBeVisible();
+  await expect(page.getByText("/consume")).toHaveCount(0);
   await expect(page.getByText("Daily token usage")).toBeVisible();
   await expect(page.getByText("America/New_York").first()).toBeVisible();
+  await page.getByRole("button", { name: "Setup" }).click();
+  await expect(page.getByRole("heading", { name: "Setup" })).toBeVisible();
+  await page.getByRole("button", { name: "Dashboard" }).click();
+  await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 
   const screenshotDir = path.join(process.cwd(), "docs", "screenshots");
   await fs.mkdir(screenshotDir, { recursive: true });

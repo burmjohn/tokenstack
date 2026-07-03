@@ -29,16 +29,41 @@ describe("CommandCenterShell", () => {
 
     expect(await screen.findAllByText("TokenStack")).not.toHaveLength(0);
     expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
-    expect(screen.getByText("Read-only")).toBeInTheDocument();
-    expect(screen.getByText("Never /consume")).toBeInTheDocument();
     expect(screen.getAllByText("Local + Remote")[0]).toBeInTheDocument();
     expect(await screen.findByText("Daily token usage")).toBeInTheDocument();
     expect(screen.getByText("Reset credit timeline")).toBeInTheDocument();
     expect(screen.getByText("Source coverage")).toBeInTheDocument();
     expect(screen.getByText("Active connectors")).toBeInTheDocument();
-    expect(screen.getAllByText("Undocumented (RO)")[0]).toBeInTheDocument();
     expect(screen.getAllByText(/America\/New_York/)[0]).toBeInTheDocument();
-    expect(screen.getByText("All data is read-only")).toBeInTheDocument();
+    expect(screen.getByText("Local app")).toBeInTheDocument();
+  });
+
+  it("does not render placeholder identity, fake repository stats, or internal safety copy", async () => {
+    const { container } = renderShell();
+    await screen.findByText("Daily token usage");
+
+    expect(screen.queryByText("John B")).not.toBeInTheDocument();
+    expect(screen.queryByText("@burmjohn")).not.toBeInTheDocument();
+    expect(screen.queryByText("JB")).not.toBeInTheDocument();
+    expect(screen.queryByText("1.2k")).not.toBeInTheDocument();
+    expect(container).not.toHaveTextContent("Read-only");
+    expect(container).not.toHaveTextContent("/consume");
+    expect(container).not.toHaveTextContent("Undocumented (RO)");
+    expect(container).not.toHaveTextContent("schema-gated");
+  });
+
+  it("uses sidebar navigation to open focused sections and setup controls", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await screen.findByText("Daily token usage");
+
+    await user.click(screen.getByRole("button", { name: "Usage" }));
+    expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument();
+    expect(screen.getByText("Recent sessions")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Setup" }));
+    expect(screen.getByRole("heading", { name: "Setup" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Scan local data" })).toBeEnabled();
   });
 
   it("toggles theme and runs refresh without duplicate controls", async () => {
@@ -100,7 +125,7 @@ describe("CommandCenterShell", () => {
     await user.click(screen.getByRole("button", { name: "Export badge" }));
     expect(await screen.findByRole("region", { name: "Badge export panel" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Usage" }));
+    await user.click(screen.getByRole("button", { name: "Usage badge layout" }));
     expect(screen.getByText("Monthly output")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Download PNG for Usage badge" }));
 

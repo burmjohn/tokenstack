@@ -1,18 +1,18 @@
 # TokenStack
 
-TokenStack is a local, read-only command center for Codex usage, reset-credit visibility, and source coverage. It is a Tauri desktop app with a Rust safety boundary, React dashboard, SQLite persistence, and synthetic test fixtures.
+TokenStack is a local desktop command center for Codex usage, reset-credit visibility, source coverage, and shareable exports. It is a Tauri app with a Rust data layer, React dashboard, SQLite persistence, and test fixtures that stay out of production dashboard data.
 
 ![TokenStack dark dashboard](docs/screenshots/tokenstack-dashboard-dark.png)
 
 ![TokenStack light dashboard](docs/screenshots/tokenstack-dashboard-light.png)
 
-## Safety Guarantees
+## What It Shows
 
-- Never calls any endpoint whose path contains `/consume`.
-- Never consumes, redeems, claims, mutates, or spends reset credits.
-- Keeps auth material in the Rust boundary and never sends auth tokens to React.
-- Stores local analytics, connector status, and coverage metadata in SQLite without raw auth files or tokens.
-- Shows source coverage and confidence instead of inventing certainty from incomplete data.
+- Local Codex usage metrics from imported history.
+- Reset-credit snapshots when available.
+- Rate-limit window snapshots when available.
+- Source coverage and confidence for each dashboard metric.
+- PNG badge exports and CSV usage bundles from the validated dashboard summary.
 
 ## Development
 
@@ -46,11 +46,11 @@ pnpm exec tauri build --target x86_64-pc-windows-msvc
 
 ## Data Sources
 
-TokenStack imports synthetic-safe Codex history shapes from local JSONL files and refreshes reset-credit snapshots only through audited read-only connector code. Undocumented read-only support is enabled by default but isolated behind endpoint registry entries, response schemas, and the same safety guard as known endpoints.
+TokenStack imports Codex history from local JSONL files and refreshes available reset-credit and rate-limit snapshots through the desktop app.
 
 ## Privacy Summary
 
-TokenStack runs locally and summarizes usage without exposing auth tokens or raw credential data. Test fixtures are synthetic, and connector errors are shown as safe status messages.
+TokenStack runs locally and summarizes usage without exposing auth tokens or raw credential data. Tests use fixtures; the app does not use fixture values for real dashboard metrics.
 
 ## License
 

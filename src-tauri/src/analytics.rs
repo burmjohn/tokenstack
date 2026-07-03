@@ -512,20 +512,17 @@ fn undocumented_coverage(
 
     if rate_limit_windows.is_empty() {
         return CoverageDto {
-            metric_key: "undocumented".to_string(),
-            source_kind: "Undocumented (RO)".to_string(),
+            metric_key: "rate-limit-windows".to_string(),
+            source_kind: "Rate-limit windows".to_string(),
             coverage_percent: 0,
-            confidence: if latest_failed { "unavailable" } else { "medium" }.to_string(),
+            confidence: "unavailable".to_string(),
             last_evidence_at_utc: latest_run_at.unwrap_or_else(|| Utc::now().to_rfc3339()),
             formula_version: "coverage-v1".to_string(),
-            missing_facets: vec![
-                "documented public contract".to_string(),
-                "successful rate-limit connector snapshot".to_string(),
-            ],
+            missing_facets: vec!["successful rate-limit window snapshot".to_string()],
             explanation: if latest_failed {
-                "Latest undocumented read-only connector attempt failed and no last-good snapshot is stored yet."
+                "Latest rate-limit window refresh failed and no previous snapshot is stored yet."
             } else {
-                "Endpoint is registered as read-only with an explicit schema, but no live snapshot is stored yet."
+                "No rate-limit window snapshot is stored yet."
             }
             .to_string(),
         };
@@ -533,33 +530,30 @@ fn undocumented_coverage(
 
     if latest_failed {
         return CoverageDto {
-            metric_key: "undocumented".to_string(),
-            source_kind: "Undocumented (RO)".to_string(),
+            metric_key: "rate-limit-windows".to_string(),
+            source_kind: "Rate-limit windows".to_string(),
             coverage_percent: 35,
             confidence: "low".to_string(),
             last_evidence_at_utc: latest_run_at
                 .expect("latest_failed requires a latest connector run"),
             formula_version: "coverage-v1".to_string(),
-            missing_facets: vec![
-                "documented public contract".to_string(),
-                "fresh successful rate-limit connector snapshot".to_string(),
-            ],
+            missing_facets: vec!["fresh rate-limit window snapshot".to_string()],
             explanation:
-                "Showing last-good rate-limit windows because the latest undocumented read-only refresh failed."
+                "Showing the last stored rate-limit windows because the latest refresh failed."
                     .to_string(),
         };
     }
 
     CoverageDto {
-        metric_key: "undocumented".to_string(),
-        source_kind: "Undocumented (RO)".to_string(),
+        metric_key: "rate-limit-windows".to_string(),
+        source_kind: "Rate-limit windows".to_string(),
         coverage_percent: 68,
         confidence: "medium".to_string(),
         last_evidence_at_utc: latest_run_at.unwrap_or_else(|| Utc::now().to_rfc3339()),
         formula_version: "coverage-v1".to_string(),
-        missing_facets: vec!["documented public contract".to_string()],
+        missing_facets: vec!["additional source confirmation".to_string()],
         explanation:
-            "Endpoint is registered as read-only with an explicit schema, but confidence remains conservative."
+            "Rate-limit windows are stored with conservative confidence until more evidence is available."
                 .to_string(),
     }
 }
@@ -624,8 +618,12 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
     Ok(vec![
         ConnectorDto {
             id: "local".to_string(),
-            name: "Local Codex CLI".to_string(),
-            detail: "configured local Codex JSONL roots".to_string(),
+            name: "Local Codex history".to_string(),
+            detail: if local_count > 0 {
+                format!("{local_count} local events imported")
+            } else {
+                "No local history imported yet".to_string()
+            },
             status: if local_count > 0 {
                 "connected"
             } else {
@@ -633,33 +631,41 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
             }
             .to_string(),
             read_only: true,
-            safety_class: "Read-only".to_string(),
+            safety_class: "Local".to_string(),
             last_run_at_utc: local_last_run.unwrap_or_else(no_evidence_timestamp),
         },
         ConnectorDto {
             id: "known-reset-credit".to_string(),
-            name: "Known read-only endpoint".to_string(),
-            detail: "/wham/rate-limit-reset-credits".to_string(),
+            name: "Reset credits".to_string(),
+            detail: known_run
+                .as_ref()
+                .map(|_| "Latest reset-credit snapshot checked")
+                .unwrap_or("No reset-credit snapshot yet")
+                .to_string(),
             status: known_run
                 .as_ref()
                 .map(|run| connector_status(&run.status))
                 .unwrap_or_else(|| "unavailable".to_string()),
             read_only: true,
-            safety_class: "Read-only".to_string(),
+            safety_class: "Snapshot".to_string(),
             last_run_at_utc: known_run
                 .map(|run| run.completed_at_utc.unwrap_or(run.started_at_utc))
                 .unwrap_or_else(no_evidence_timestamp),
         },
         ConnectorDto {
-            id: "undocumented-ro".to_string(),
-            name: "Undocumented (RO)".to_string(),
-            detail: "registered schema-gated endpoint".to_string(),
+            id: "rate-limit-windows".to_string(),
+            name: "Rate-limit windows".to_string(),
+            detail: undocumented_run
+                .as_ref()
+                .map(|_| "Latest rate-limit window snapshot checked")
+                .unwrap_or("No rate-limit window snapshot yet")
+                .to_string(),
             status: undocumented_run
                 .as_ref()
                 .map(|run| connector_status(&run.status))
                 .unwrap_or_else(|| "unavailable".to_string()),
             read_only: true,
-            safety_class: "Read-only".to_string(),
+            safety_class: "Snapshot".to_string(),
             last_run_at_utc: undocumented_run
                 .map(|run| run.completed_at_utc.unwrap_or(run.started_at_utc))
                 .unwrap_or_else(no_evidence_timestamp),
@@ -970,6 +976,34 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_summary_uses_user_facing_source_labels() {
+        let conn = open_memory().unwrap();
+        let summary = build_dashboard_summary(&conn, "combined").unwrap();
+        let visible_copy = summary
+            .connectors
+            .iter()
+            .flat_map(|connector| {
+                [
+                    connector.name.as_str(),
+                    connector.detail.as_str(),
+                    connector.safety_class.as_str(),
+                ]
+            })
+            .chain(summary.coverage.iter().flat_map(|coverage| {
+                [coverage.source_kind.as_str(), coverage.explanation.as_str()]
+            }))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for internal_term in ["Read-only", "read-only", "Undocumented", "schema-gated"] {
+            assert!(
+                !visible_copy.contains(internal_term),
+                "visible summary copy leaked internal term: {internal_term}"
+            );
+        }
+    }
+
+    #[test]
     fn data_mode_filters_local_and_remote_sources() {
         let conn = seeded_conn();
         let run_id = crate::db::insert_connector_run(
@@ -1093,7 +1127,7 @@ mod tests {
         let undocumented_coverage = summary
             .coverage
             .iter()
-            .find(|coverage| coverage.metric_key == "undocumented")
+            .find(|coverage| coverage.metric_key == "rate-limit-windows")
             .unwrap();
 
         assert_eq!(summary.metrics[4].value, "4");

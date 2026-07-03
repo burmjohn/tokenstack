@@ -83,6 +83,7 @@ export function ExportPanel({ summary, onClose }: { summary: DashboardSummary; o
             <button
               key={item.id}
               type="button"
+              aria-label={`${item.label} badge layout`}
               aria-pressed={layout === item.id}
               className={cn(
                 "h-8 rounded-[6px] px-3 text-xs font-medium text-muted-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",

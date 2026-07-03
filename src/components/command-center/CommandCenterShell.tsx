@@ -5,21 +5,17 @@ import {
   ChevronDown,
   Database,
   Download,
-  ExternalLink,
   Gauge,
-  Github,
   ImageDown,
   Info,
   LayoutDashboard,
-  LockKeyhole,
   Moon,
   RefreshCcw,
   ServerCog,
-  ShieldCheck,
   Sun,
   Zap,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
@@ -35,15 +31,48 @@ import { cn } from "../../lib/utils";
 import { ExportPanel } from "./ExportPanel";
 
 type Theme = "dark" | "light";
+type NavSection = "dashboard" | "usage" | "resets" | "sources" | "setup";
 
 const metricIcons = [Activity, CalendarDays, BarChart3, Zap, RefreshCcw];
 const AUTO_REFRESH_BASE_DELAY_MS = 60_000;
 const AUTO_REFRESH_MAX_DELAY_MS = 300_000;
 
+const NAV_ITEMS = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "usage", label: "Usage", icon: BarChart3 },
+  { id: "resets", label: "Reset Credits", icon: RefreshCcw },
+  { id: "sources", label: "Sources", icon: Database },
+  { id: "setup", label: "Setup", icon: ServerCog },
+] as const;
+
+const SECTION_COPY: Record<NavSection, { heading: string; description: string }> = {
+  dashboard: {
+    heading: "Dashboard",
+    description: "Local Codex usage, reset credits, and source coverage.",
+  },
+  usage: {
+    heading: "Usage",
+    description: "Review imported local usage and session history.",
+  },
+  resets: {
+    heading: "Reset Credits",
+    description: "Track reset-credit snapshots when they are available.",
+  },
+  sources: {
+    heading: "Sources",
+    description: "See which local and remote sources currently have evidence.",
+  },
+  setup: {
+    heading: "Setup",
+    description: "Connect local history and refresh available snapshots.",
+  },
+};
+
 export function CommandCenterShell() {
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("tokenstack-theme") as Theme | null) ?? "dark");
   const [dataMode, setDataMode] = useState<DataMode>("combined");
   const [autoRefreshDelayMs, setAutoRefreshDelayMs] = useState(AUTO_REFRESH_BASE_DELAY_MS);
+  const [activeSection, setActiveSection] = useState<NavSection>("dashboard");
   const [isExportPanelOpen, setIsExportPanelOpen] = useState(false);
   const query = useDashboardSummary(dataMode);
   const refresh = useRefreshAll(dataMode);
@@ -114,9 +143,16 @@ export function CommandCenterShell() {
     <TooltipProvider delayDuration={150}>
       <div className="min-h-screen bg-background text-foreground">
         <div className="grid min-h-screen grid-cols-[196px_minmax(0,1fr)] grid-rows-[1fr_auto] max-[980px]:grid-cols-1">
-          <Sidebar dataMode={dataMode} setDataMode={handleDataModeChange} autoRefreshDelayMs={autoRefreshDelayMs} />
+          <Sidebar
+            activeSection={activeSection}
+            dataMode={dataMode}
+            setDataMode={handleDataModeChange}
+            setActiveSection={setActiveSection}
+            autoRefreshDelayMs={autoRefreshDelayMs}
+          />
           <main className="min-w-0 px-6 py-6 max-[980px]:px-4">
             <DashboardHeader
+              activeSection={activeSection}
               dataMode={dataMode}
               setDataMode={handleDataModeChange}
               theme={theme}
@@ -129,10 +165,20 @@ export function CommandCenterShell() {
               onToggleExportPanel={() => setIsExportPanelOpen((open) => !open)}
               onExportCsv={handleCsvExport}
             />
+            <MobileSectionNav activeSection={activeSection} setActiveSection={setActiveSection} />
             {isExportPanelOpen && summary ? <ExportPanel summary={summary} onClose={() => setIsExportPanelOpen(false)} /> : null}
-            {summary ? <DashboardContent summary={summary} /> : <DashboardLoading hasError={query.isError} />}
+            {summary ? (
+              <CommandCenterContent
+                activeSection={activeSection}
+                isRefreshing={refresh.isPending}
+                onRefresh={() => refresh.mutate()}
+                summary={summary}
+              />
+            ) : (
+              <DashboardLoading hasError={query.isError} />
+            )}
           </main>
-          <SafetyFooter />
+          <CommandCenterFooter />
         </div>
       </div>
     </TooltipProvider>
@@ -140,16 +186,20 @@ export function CommandCenterShell() {
 }
 
 function Sidebar({
+  activeSection,
   dataMode,
   setDataMode,
+  setActiveSection,
   autoRefreshDelayMs,
 }: {
+  activeSection: NavSection;
   dataMode: DataMode;
   setDataMode: (mode: DataMode) => void;
+  setActiveSection: (section: NavSection) => void;
   autoRefreshDelayMs: number;
 }) {
   return (
-    <aside className="row-span-2 border-r border-border bg-sidebar p-3 max-[980px]:hidden" aria-label="Primary">
+    <aside className="row-span-2 flex min-h-screen flex-col border-r border-border bg-sidebar p-3 max-[980px]:hidden" aria-label="Primary">
       <div className="mb-6 flex h-12 items-center gap-3 px-2">
         <div className="grid h-8 w-8 place-items-center rounded-[8px] bg-primary/15 text-primary">
           <Database aria-hidden size={20} />
@@ -157,44 +207,34 @@ function Sidebar({
         <div className="text-lg font-semibold">TokenStack</div>
       </div>
       <nav className="space-y-1">
-        {[
-          ["Dashboard", LayoutDashboard],
-          ["Usage", BarChart3],
-          ["Reset Credits", RefreshCcw],
-          ["Sources", Database],
-          ["Settings", ServerCog],
-        ].map(([label, Icon], index) => (
-          <a
-            key={label as string}
-            className={cn("flex h-11 items-center gap-3 rounded-[8px] px-3 text-sm text-muted-foreground", index === 0 && "bg-primary/15 text-foreground")}
-            href="#dashboard"
-            aria-current={index === 0 ? "page" : undefined}
-          >
-            <Icon aria-hidden size={18} />
-            {label as string}
-          </a>
-        ))}
+        {NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const isActive = activeSection === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={cn(
+                "flex h-11 w-full items-center gap-3 rounded-[8px] px-3 text-left text-sm text-muted-foreground outline-none transition-colors hover:bg-primary/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+                isActive && "bg-primary/15 text-foreground",
+              )}
+              aria-current={isActive ? "page" : undefined}
+              onClick={() => setActiveSection(item.id)}
+            >
+              <Icon aria-hidden size={18} />
+              {item.label}
+            </button>
+          );
+        })}
       </nav>
-      <div className="mt-auto flex min-h-[590px] flex-col justify-end gap-3">
-        <label className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">
-          <span className="mb-2 flex items-center justify-between">
-            Data mode <span className="inline-flex items-center gap-1 text-mint">Live</span>
-          </span>
-          <select
-            value={dataMode}
-            onChange={(event) => setDataMode(event.target.value as DataMode)}
-            className="w-full rounded-[6px] border border-border bg-background px-2 py-1.5 text-xs text-foreground"
-            aria-label="Data mode"
-          >
-            <option value="combined">Local + Remote</option>
-            <option value="local">Local</option>
-            <option value="remote">Remote</option>
-          </select>
-        </label>
+      <div className="mt-auto flex flex-col gap-3">
+        <DataModeSelect dataMode={dataMode} setDataMode={setDataMode} />
         <div className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">
           <div className="flex items-center justify-between">
             <span>Auto refresh</span>
-            <span className="inline-flex items-center gap-1">{Math.round(autoRefreshDelayMs / 1000)}s <ChevronDown size={13} aria-hidden /></span>
+            <span className="inline-flex items-center gap-1">
+              {Math.round(autoRefreshDelayMs / 1000)}s <ChevronDown size={13} aria-hidden />
+            </span>
           </div>
         </div>
         <div className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">
@@ -203,16 +243,60 @@ function Sidebar({
             <span>v0.1.0</span>
           </div>
         </div>
-        <a className="flex h-10 items-center justify-between rounded-[8px] border border-border bg-card px-3 text-sm font-medium" href="https://github.com/burmjohn/tokenstack">
-          <span className="inline-flex items-center gap-2"><Github size={17} aria-hidden /> Star</span>
-          <span>1.2k</span>
-        </a>
       </div>
     </aside>
   );
 }
 
+function MobileSectionNav({ activeSection, setActiveSection }: { activeSection: NavSection; setActiveSection: (section: NavSection) => void }) {
+  return (
+    <nav className="mb-4 hidden gap-2 overflow-x-auto border-b border-border pb-3 max-[980px]:flex" aria-label="Mobile sections">
+      {NAV_ITEMS.map((item) => {
+        const Icon = item.icon;
+        const isActive = activeSection === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            aria-label={`Open ${item.label}`}
+            aria-current={isActive ? "page" : undefined}
+            className={cn(
+              "inline-flex h-9 shrink-0 items-center gap-2 rounded-[8px] border border-border bg-card px-3 text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              isActive && "border-primary/50 bg-primary/15 text-foreground",
+            )}
+            onClick={() => setActiveSection(item.id)}
+          >
+            <Icon size={15} aria-hidden />
+            {item.label}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function DataModeSelect({ dataMode, setDataMode }: { dataMode: DataMode; setDataMode: (mode: DataMode) => void }) {
+  return (
+    <label className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">
+      <span className="mb-2 flex items-center justify-between">
+        Data mode <span className="inline-flex items-center gap-1 text-mint">Live</span>
+      </span>
+      <select
+        value={dataMode}
+        onChange={(event) => setDataMode(event.target.value as DataMode)}
+        className="w-full rounded-[6px] border border-border bg-background px-2 py-1.5 text-xs text-foreground"
+        aria-label="Data mode"
+      >
+        <option value="combined">Local + Remote</option>
+        <option value="local">Local</option>
+        <option value="remote">Remote</option>
+      </select>
+    </label>
+  );
+}
+
 function DashboardHeader({
+  activeSection,
   dataMode,
   setDataMode,
   theme,
@@ -225,6 +309,7 @@ function DashboardHeader({
   onToggleExportPanel,
   onExportCsv,
 }: {
+  activeSection: NavSection;
   dataMode: DataMode;
   setDataMode: (mode: DataMode) => void;
   theme: Theme;
@@ -237,14 +322,16 @@ function DashboardHeader({
   onToggleExportPanel: () => void;
   onExportCsv: () => void;
 }) {
+  const copy = SECTION_COPY[activeSection];
+
   return (
-    <header className="mb-6 flex flex-wrap items-start justify-between gap-4" id="dashboard">
+    <header className="mb-6 flex flex-wrap items-start justify-between gap-4" id={activeSection}>
       <div>
-        <h1 className="text-[26px] font-semibold leading-tight tracking-normal">Dashboard</h1>
-        <p className="mt-2 text-sm text-muted-foreground">Local Codex usage, resets, and source intelligence. Always read-only.</p>
+        <h1 className="text-[26px] font-semibold leading-tight tracking-normal">{copy.heading}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{copy.description}</p>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-3">
-        <span className="text-xs text-muted-foreground">Last refresh: {lastRefresh} <span className="text-mint">●</span></span>
+        <span className="text-xs text-muted-foreground">Last refresh: {lastRefresh}</span>
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="inline-flex" aria-label={!hasSummary ? "Export badge requires loaded dashboard data" : undefined} tabIndex={!hasSummary ? 0 : undefined}>
@@ -273,10 +360,14 @@ function DashboardHeader({
               <RefreshCcw size={17} className={cn(isRefreshing && "animate-spin")} aria-hidden />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Refresh local import and read-only connector snapshots.</TooltipContent>
+          <TooltipContent>Refresh local imports and available snapshots.</TooltipContent>
         </Tooltip>
-        <Badge tone="success" className="h-9 gap-2 px-3"><ShieldCheck size={15} aria-hidden /> Read-only</Badge>
-        <Badge className="h-9 gap-2 px-3"><LockKeyhole size={14} aria-hidden /> Never /consume</Badge>
+        <Badge tone="success" className="h-9 gap-2 px-3">
+          <Database size={15} aria-hidden /> Local app
+        </Badge>
+        <Badge className="h-9 gap-2 px-3">
+          <Gauge size={14} aria-hidden /> No token display
+        </Badge>
         <label className="sr-only" htmlFor="header-data-mode">Data mode</label>
         <select
           id="header-data-mode"
@@ -291,13 +382,6 @@ function DashboardHeader({
         <Button variant="secondary" size="icon" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
           {theme === "dark" ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
         </Button>
-        <div className="flex h-10 items-center gap-3 rounded-[8px] border border-border bg-card px-3">
-          <div className="grid h-7 w-7 place-items-center rounded-full bg-primary text-primary-foreground text-xs">JB</div>
-          <div className="leading-tight">
-            <div className="text-sm font-medium">John B</div>
-            <div className="text-xs text-muted-foreground">@burmjohn</div>
-          </div>
-        </div>
       </div>
     </header>
   );
@@ -307,12 +391,61 @@ function DashboardLoading({ hasError }: { hasError: boolean }) {
   return (
     <Card className="p-8">
       <h2 className="text-lg font-semibold">{hasError ? "Dashboard data unavailable" : "Loading dashboard"}</h2>
-      <p className="mt-2 text-sm text-muted-foreground">{hasError ? "The dashboard keeps existing local data and shows redacted errors only." : "Preparing local read-only summary."}</p>
+      <p className="mt-2 text-sm text-muted-foreground">{hasError ? "The dashboard keeps existing local data and shows redacted errors only." : "Preparing local dashboard summary."}</p>
     </Card>
   );
 }
 
-function DashboardContent({ summary }: { summary: DashboardSummary }) {
+function CommandCenterContent({
+  activeSection,
+  isRefreshing,
+  onRefresh,
+  summary,
+}: {
+  activeSection: NavSection;
+  isRefreshing: boolean;
+  onRefresh: () => void;
+  summary: DashboardSummary;
+}) {
+  if (activeSection === "usage") {
+    return (
+      <div className="space-y-4">
+        <MetricStrip summary={summary} />
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)] gap-4 max-[1100px]:grid-cols-1">
+          <TokenHeatmap summary={summary} />
+          <RateLimitWindows summary={summary} />
+        </div>
+        <RecentSessions summary={summary} />
+      </div>
+    );
+  }
+
+  if (activeSection === "resets") {
+    return (
+      <div className="grid grid-cols-[minmax(0,1fr)_minmax(320px,0.55fr)] items-start gap-4 max-[900px]:grid-cols-1">
+        <ResetTimeline summary={summary} />
+        <NextReset summary={summary} />
+      </div>
+    );
+  }
+
+  if (activeSection === "sources") {
+    return (
+      <div className="grid grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] items-start gap-4 max-[900px]:grid-cols-1">
+        <SourceCoverage summary={summary} />
+        <ActiveConnectors summary={summary} />
+      </div>
+    );
+  }
+
+  if (activeSection === "setup") {
+    return <SetupSection dataMode={summary.dataMode} isRefreshing={isRefreshing} onRefresh={onRefresh} summary={summary} />;
+  }
+
+  return <DashboardOverview summary={summary} />;
+}
+
+function DashboardOverview({ summary }: { summary: DashboardSummary }) {
   return (
     <div className="space-y-4">
       <MetricStrip summary={summary} />
@@ -329,6 +462,54 @@ function DashboardContent({ summary }: { summary: DashboardSummary }) {
         <RecentSessions summary={summary} />
         <RateLimitWindows summary={summary} />
       </div>
+    </div>
+  );
+}
+
+function SetupSection({
+  dataMode,
+  isRefreshing,
+  onRefresh,
+  summary,
+}: {
+  dataMode: DataMode;
+  isRefreshing: boolean;
+  onRefresh: () => void;
+  summary: DashboardSummary;
+}) {
+  return (
+    <div className="grid grid-cols-[minmax(0,0.95fr)_minmax(320px,0.65fr)] items-start gap-4 max-[900px]:grid-cols-1">
+      <Card>
+        <CardHeader>
+          <CardTitle>Local data</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">Scan local history and refresh available account snapshots for the selected data mode.</p>
+          <Button type="button" onClick={onRefresh} disabled={isRefreshing} aria-label="Scan local data">
+            <RefreshCcw size={16} className={cn(isRefreshing && "animate-spin")} aria-hidden />
+            Scan local data
+          </Button>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Current configuration</CardTitle>
+          <Badge tone="muted">{dataModeLabel(dataMode)}</Badge>
+        </CardHeader>
+        <CardContent>
+          <ul className="divide-y divide-border">
+            {summary.connectors.map((connector) => (
+              <li key={connector.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">{connector.name}</div>
+                  <div className="mt-1 truncate text-xs text-muted-foreground">{connector.detail}</div>
+                </div>
+                <ConnectorStatusBadge status={connector.status} />
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -360,7 +541,7 @@ function MetricStrip({ summary }: { summary: DashboardSummary }) {
 }
 
 function TokenHeatmap({ summary }: { summary: DashboardSummary }) {
-  const months = ["Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul"];
+  const months = ["Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "May", "Jun", "Jul"];
   return (
     <Card className="min-h-[330px]">
       <CardHeader>
@@ -419,19 +600,26 @@ function ResetTimeline({ summary }: { summary: DashboardSummary }) {
         <CardTitle className="inline-flex items-center gap-2">Reset credit timeline <Info size={15} aria-label="Reset credit coverage" /></CardTitle>
       </CardHeader>
       <CardContent>
-        <ol className="space-y-5">
-          {summary.resetCredits.map((credit) => (
-            <li key={credit.id} className="grid grid-cols-[26px_34px_minmax(0,1fr)_56px] items-start gap-2">
-              <span className="mt-1 h-3 w-3 rounded-full border-2 border-mint" aria-hidden />
-              <span className="text-xl font-semibold">{credit.creditCount}</span>
-              <span className="text-sm">
-                <span className="block text-muted-foreground">Expires {credit.expiresAtNy.split(", 2:")[0]}</span>
-                <span className="text-xs text-muted-foreground">2:14 PM EDT</span>
-              </span>
-              <Badge tone="success" className="justify-center">{credit.daysRemaining} days</Badge>
-            </li>
-          ))}
-        </ol>
+        {summary.resetCredits.length > 0 ? (
+          <ol className="space-y-5">
+            {summary.resetCredits.map((credit) => {
+              const { date, time } = splitResetDate(credit.expiresAtNy);
+              return (
+                <li key={credit.id} className="grid grid-cols-[26px_34px_minmax(0,1fr)_56px] items-start gap-2">
+                  <span className="mt-1 h-3 w-3 rounded-full border-2 border-mint" aria-hidden />
+                  <span className="text-xl font-semibold">{credit.creditCount}</span>
+                  <span className="text-sm">
+                    <span className="block text-muted-foreground">Expires {date}</span>
+                    <span className="text-xs text-muted-foreground">{time}</span>
+                  </span>
+                  <Badge tone="success" className="justify-center">{credit.daysRemaining} days</Badge>
+                </li>
+              );
+            })}
+          </ol>
+        ) : (
+          <p className="text-sm text-muted-foreground">No reset-credit snapshot yet.</p>
+        )}
         <p className="mt-6 text-xs text-muted-foreground">All times in {summary.timezone}</p>
       </CardContent>
     </Card>
@@ -439,14 +627,14 @@ function ResetTimeline({ summary }: { summary: DashboardSummary }) {
 }
 
 function SourceCoverage({ summary }: { summary: DashboardSummary }) {
-  const average = Math.round(summary.coverage.reduce((total, item) => total + item.coveragePercent, 0) / summary.coverage.length);
+  const average = summary.coverage.length > 0 ? Math.round(summary.coverage.reduce((total, item) => total + item.coveragePercent, 0) / summary.coverage.length) : 0;
   return (
     <Card>
       <CardHeader>
         <CardTitle className="inline-flex items-center gap-2">Source coverage <Info size={15} aria-label="Source coverage explanation" /></CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="flex items-center gap-5">
+        <div className="flex items-center gap-5 max-[520px]:items-start">
           <div className="grid h-28 w-28 shrink-0 place-items-center rounded-full border-[10px] border-mint/80">
             <div className="text-center">
               <div className="text-2xl font-semibold">{average}%</div>
@@ -473,11 +661,12 @@ function SourceCoverage({ summary }: { summary: DashboardSummary }) {
 }
 
 function ActiveConnectors({ summary }: { summary: DashboardSummary }) {
+  const connected = summary.connectors.filter((connector) => connector.status === "connected").length;
   return (
     <Card>
       <CardHeader>
         <CardTitle className="inline-flex items-center gap-2">Active connectors <Info size={15} aria-label="Connector status details" /></CardTitle>
-        <Badge tone="muted">{summary.connectors.length}/3</Badge>
+        <Badge tone="muted">{connected}/{summary.connectors.length}</Badge>
       </CardHeader>
       <CardContent>
         <ul className="divide-y divide-border">
@@ -485,18 +674,28 @@ function ActiveConnectors({ summary }: { summary: DashboardSummary }) {
             <li key={connector.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-medium">
-                  <span className="h-2 w-2 rounded-full bg-mint" aria-hidden />
+                  <span className={cn("h-2 w-2 rounded-full", connector.status === "connected" ? "bg-mint" : connector.status === "degraded" ? "bg-amber" : "bg-muted-foreground")} aria-hidden />
                   {connector.name}
                 </div>
                 <div className="mt-1 truncate text-xs text-muted-foreground">{connector.detail}</div>
               </div>
-              <Badge tone="source">{connector.safetyClass}</Badge>
+              <ConnectorStatusBadge status={connector.status} />
             </li>
           ))}
         </ul>
       </CardContent>
     </Card>
   );
+}
+
+function ConnectorStatusBadge({ status }: { status: DashboardSummary["connectors"][number]["status"] }) {
+  if (status === "connected") {
+    return <Badge tone="success" className="whitespace-nowrap">Connected</Badge>;
+  }
+  if (status === "degraded") {
+    return <Badge tone="warning" className="whitespace-nowrap">Needs attention</Badge>;
+  }
+  return <Badge tone="muted" className="whitespace-nowrap">Needs setup</Badge>;
 }
 
 function NextReset({ summary }: { summary: DashboardSummary }) {
@@ -521,76 +720,92 @@ function RecentSessions({ summary }: { summary: DashboardSummary }) {
         <CardTitle className="inline-flex items-center gap-2">Recent sessions <Info size={15} aria-label="Recent session source labels" /></CardTitle>
       </CardHeader>
       <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Start time</TableHead>
-              <TableHead>Duration</TableHead>
-              <TableHead>Tokens</TableHead>
-              <TableHead>Peak tokens</TableHead>
-              <TableHead>Mode</TableHead>
-              <TableHead>Source</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {summary.sessions.map((session) => (
-              <TableRow key={session.id}>
-                <TableCell>{session.startTime}</TableCell>
-                <TableCell>{session.duration}</TableCell>
-                <TableCell>{session.tokens}</TableCell>
-                <TableCell>{session.peakTokens}</TableCell>
-                <TableCell><Badge tone="source">{session.mode}</Badge></TableCell>
-                <TableCell className="space-x-1">{session.sources.map((source) => <Badge key={source} tone={source === "CLI" ? "success" : "source"}>{source}</Badge>)}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-        <div className="mt-3 text-xs text-muted-foreground">Showing 1 to 5 of 28 sessions</div>
+        {summary.sessions.length > 0 ? (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Start time</TableHead>
+                  <TableHead>Duration</TableHead>
+                  <TableHead>Tokens</TableHead>
+                  <TableHead>Peak tokens</TableHead>
+                  <TableHead>Mode</TableHead>
+                  <TableHead>Source</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {summary.sessions.map((session) => (
+                  <TableRow key={session.id}>
+                    <TableCell>{session.startTime}</TableCell>
+                    <TableCell>{session.duration}</TableCell>
+                    <TableCell>{session.tokens}</TableCell>
+                    <TableCell>{session.peakTokens}</TableCell>
+                    <TableCell><Badge tone="source">{session.mode}</Badge></TableCell>
+                    <TableCell className="space-x-1">{session.sources.map((source) => <Badge key={source} tone={source === "CLI" ? "success" : "source"}>{source}</Badge>)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div className="mt-3 text-xs text-muted-foreground">Showing {summary.sessions.length} {summary.sessions.length === 1 ? "session" : "sessions"}</div>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">No sessions imported yet.</p>
+        )}
       </CardContent>
     </Card>
   );
 }
 
 function RateLimitWindows({ summary }: { summary: DashboardSummary }) {
+  const progress = summary.rateLimitWindows.length > 0
+    ? Math.round(summary.rateLimitWindows.reduce((total, window) => total + window.progressPercent, 0) / summary.rateLimitWindows.length)
+    : 0;
+
   return (
     <Card>
       <CardHeader>
         <CardTitle className="inline-flex items-center gap-2">Rate-limit windows <Info size={15} aria-label="Rate-limit window coverage" /></CardTitle>
       </CardHeader>
       <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Window</TableHead>
-              <TableHead>Limit</TableHead>
-              <TableHead>Used</TableHead>
-              <TableHead>Remaining</TableHead>
-              <TableHead>Resets in</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {summary.rateLimitWindows.map((window) => (
-              <TableRow key={window.id}>
-                <TableCell>{window.window}</TableCell>
-                <TableCell>{window.limit}</TableCell>
-                <TableCell>{window.used}</TableCell>
-                <TableCell>{window.remaining}</TableCell>
-                <TableCell>{window.resetsIn}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-        <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
-          <span>Overall (30d)</span>
-          <Progress value={18} className="max-w-[220px]" />
-          <span>18%</span>
-        </div>
+        {summary.rateLimitWindows.length > 0 ? (
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Window</TableHead>
+                  <TableHead>Limit</TableHead>
+                  <TableHead>Used</TableHead>
+                  <TableHead>Remaining</TableHead>
+                  <TableHead>Resets in</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {summary.rateLimitWindows.map((window) => (
+                  <TableRow key={window.id}>
+                    <TableCell>{window.window}</TableCell>
+                    <TableCell>{window.limit}</TableCell>
+                    <TableCell>{window.used}</TableCell>
+                    <TableCell>{window.remaining}</TableCell>
+                    <TableCell>{window.resetsIn}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
+              <span>Overall</span>
+              <Progress value={progress} className="max-w-[220px]" />
+              <span>{progress}%</span>
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">No rate-limit window snapshots yet.</p>
+        )}
       </CardContent>
     </Card>
   );
 }
 
-function CoverageTooltip({ coverage, children }: { coverage: MetricCoverage; children: React.ReactNode }) {
+function CoverageTooltip({ coverage, children }: { coverage: MetricCoverage; children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
@@ -603,14 +818,34 @@ function CoverageTooltip({ coverage, children }: { coverage: MetricCoverage; chi
   );
 }
 
-function SafetyFooter() {
+function CommandCenterFooter() {
   return (
     <footer className="col-span-2 flex h-16 items-center justify-around border-t border-border bg-sidebar px-6 text-sm text-muted-foreground max-[980px]:col-span-1 max-[760px]:h-auto max-[760px]:flex-col max-[760px]:items-start max-[760px]:gap-3 max-[760px]:py-4">
-      <span className="inline-flex items-center gap-2"><LockKeyhole size={16} aria-hidden /> All data is read-only</span>
-      <span className="inline-flex items-center gap-2"><ShieldCheck size={16} aria-hidden /> We never consume credits or tokens</span>
-      <span className="inline-flex items-center gap-2"><Gauge size={16} aria-hidden /> Open source</span>
+      <span className="inline-flex items-center gap-2"><Database size={16} aria-hidden /> Local-first dashboard</span>
+      <span className="inline-flex items-center gap-2"><ImageDown size={16} aria-hidden /> Badge export</span>
+      <span className="inline-flex items-center gap-2"><Download size={16} aria-hidden /> CSV bundle</span>
       <span className="inline-flex items-center gap-2"><Info size={16} aria-hidden /> MIT License</span>
-      <a className="inline-flex items-center gap-2 text-primary" href="https://github.com/burmjohn/tokenstack">GitHub Repository <ExternalLink size={15} aria-hidden /></a>
     </footer>
   );
+}
+
+function splitResetDate(value: string) {
+  const parts = value.split(", ");
+  if (parts.length >= 3) {
+    return {
+      date: `${parts[0]}, ${parts[1]}`,
+      time: parts.slice(2).join(", "),
+    };
+  }
+  return { date: value, time: "" };
+}
+
+function dataModeLabel(dataMode: DataMode) {
+  if (dataMode === "local") {
+    return "Local";
+  }
+  if (dataMode === "remote") {
+    return "Remote";
+  }
+  return "Local + Remote";
 }
