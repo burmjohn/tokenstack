@@ -47,12 +47,27 @@ describe("CommandCenterShell", () => {
     expect(await screen.findAllByText("TokenStack")).not.toHaveLength(0);
     expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.getAllByText("Local + Remote")[0]).toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "TokenStack controls" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "TokenStack status" })).toBeInTheDocument();
     expect(await screen.findByText("Daily token usage")).toBeInTheDocument();
     expect(screen.getByText("Reset credit timeline")).toBeInTheDocument();
     expect(screen.getByText("Source coverage")).toBeInTheDocument();
     expect(screen.getByText("Active connectors")).toBeInTheDocument();
     expect(screen.getAllByText(/America\/New_York/)[0]).toBeInTheDocument();
-    expect(screen.getByText("Local app")).toBeInTheDocument();
+  });
+
+  it("renders desktop app chrome without web footer or defensive badges", async () => {
+    const { container } = renderShell();
+    await screen.findByText("Daily token usage");
+
+    expect(screen.getByRole("toolbar", { name: "TokenStack controls" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "TokenStack status" })).toBeInTheDocument();
+    expect(screen.queryByText("No token display")).not.toBeInTheDocument();
+    expect(screen.queryByText("Local app")).not.toBeInTheDocument();
+    expect(screen.queryByText("MIT License")).not.toBeInTheDocument();
+    expect(container).not.toHaveTextContent("Never /consume");
+    expect(container).not.toHaveTextContent("/consume");
+    expect(container).not.toHaveTextContent("Read-only");
   });
 
   it("does not render placeholder identity, fake repository stats, or internal safety copy", async () => {
@@ -85,13 +100,14 @@ describe("CommandCenterShell", () => {
 
   it("toggles theme and runs refresh without duplicate controls", async () => {
     const user = userEvent.setup();
+    localStorage.setItem("tokenstack-theme", "dark");
     renderShell();
 
     const themeButton = await screen.findByRole("button", { name: /Switch to light theme/i });
     await user.click(themeButton);
     expect(document.documentElement.dataset.theme).toBe("light");
 
-    const refreshButton = screen.getByRole("button", { name: "Refresh now" });
+    const refreshButton = screen.getByRole("button", { name: "Refresh data" });
     await user.click(refreshButton);
     expect(refreshButton).toBeDisabled();
   });
@@ -100,11 +116,11 @@ describe("CommandCenterShell", () => {
     renderShell();
 
     const badgeButton = screen.getByRole("button", { name: "Export badge" });
-    const csvButton = screen.getByRole("button", { name: "Export CSV" });
+    const csvButton = screen.getByRole("button", { name: "Export usage CSV" });
     expect(badgeButton).toBeDisabled();
     expect(csvButton).toBeDisabled();
     expect(screen.getByLabelText("Export badge requires loaded dashboard data")).toBeInTheDocument();
-    expect(screen.getByLabelText("Export CSV requires loaded dashboard data")).toBeInTheDocument();
+    expect(screen.getByLabelText("Export usage CSV requires loaded dashboard data")).toBeInTheDocument();
 
     await screen.findByText("Daily token usage");
     expect(badgeButton).toBeEnabled();
@@ -117,7 +133,7 @@ describe("CommandCenterShell", () => {
     await screen.findByText("Daily token usage");
 
     const download = installDownloadMocks();
-    await user.click(screen.getByRole("button", { name: "Export CSV" }));
+    await user.click(screen.getByRole("button", { name: "Export usage CSV" }));
 
     await waitFor(() => expect(download.anchorClick).toHaveBeenCalledTimes(1));
     expect(download.getAnchor()?.download).toMatch(/^tokenstack-usage-\d{4}-\d{2}-\d{2}\.csv$/);

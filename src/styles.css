@@ -58,7 +58,7 @@ body,
 body {
   margin: 0;
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     sans-serif;
   background: var(--color-background);
   color: var(--color-foreground);
@@ -72,4 +72,184 @@ a {
 button,
 select {
   font: inherit;
+}
+
+.desktop-shell {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+
+.desktop-toolbar {
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: minmax(190px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--color-border);
+  padding: 8px 14px;
+  background: color-mix(in oklab, var(--color-background), var(--color-card) 44%);
+}
+
+.desktop-toolbar__brand {
+  min-width: 0;
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, auto);
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+}
+
+.desktop-toolbar__icon {
+  grid-row: 1 / span 2;
+  display: grid;
+  height: 30px;
+  width: 30px;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--color-primary), transparent 82%);
+  color: var(--color-primary);
+}
+
+.desktop-toolbar__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 18px;
+}
+
+.desktop-toolbar__refresh {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  line-height: 14px;
+}
+
+.desktop-toolbar__nav {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.desktop-toolbar__nav-button {
+  min-height: 34px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--color-muted-foreground);
+  background: transparent;
+  font-size: 13px;
+  line-height: 1;
+  outline: none;
+}
+
+.desktop-toolbar__nav-button:hover {
+  color: var(--color-foreground);
+  background: var(--color-muted);
+}
+
+.desktop-toolbar__nav-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+
+.desktop-toolbar__nav-button--active {
+  border-color: color-mix(in oklab, var(--color-primary), transparent 48%);
+  color: var(--color-foreground);
+  background: color-mix(in oklab, var(--color-primary), transparent 84%);
+}
+
+.desktop-toolbar__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.desktop-toolbar__select {
+  height: 34px;
+  max-width: 150px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0 28px 0 9px;
+  color: var(--color-foreground);
+  background: var(--color-card);
+  font-size: 12px;
+  outline: none;
+}
+
+.desktop-toolbar__select:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-ring);
+}
+
+.desktop-main {
+  min-width: 0;
+  padding: 18px;
+  overflow: auto;
+}
+
+.desktop-statusbar {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-top: 1px solid var(--color-border);
+  padding: 4px 12px;
+  color: var(--color-muted-foreground);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in oklab, var(--color-background), var(--color-card) 30%);
+}
+
+@media (max-width: 900px) {
+  .desktop-toolbar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .desktop-toolbar__brand,
+  .desktop-toolbar__actions,
+  .desktop-toolbar__nav {
+    justify-content: flex-start;
+  }
+
+  .desktop-toolbar__actions {
+    flex-wrap: wrap;
+  }
+
+  .desktop-main {
+    padding: 14px;
+  }
+
+  .desktop-statusbar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+}
+
+@media (max-width: 520px) {
+  .desktop-toolbar {
+    padding: 8px 10px;
+  }
+
+  .desktop-toolbar__nav {
+    justify-content: flex-start;
+  }
+
+  .desktop-toolbar__nav-button {
+    padding: 0 8px;
+    font-size: 12px;
+  }
 }

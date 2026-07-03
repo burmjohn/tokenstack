@@ -2,15 +2,8 @@ import {
   Activity,
   BarChart3,
   CalendarDays,
-  ChevronDown,
-  Database,
-  Download,
-  Gauge,
-  ImageDown,
   Info,
-  Moon,
   RefreshCcw,
-  Sun,
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -29,8 +22,10 @@ import { downloadTextFile } from "../../features/exports/download";
 import type { DataMode, DashboardSummary, MetricCoverage } from "../../lib/schemas/dashboard";
 import { cn } from "../../lib/utils";
 import { createDesktopShellActionHandler } from "./desktopShellActions";
+import { DesktopStatusBar } from "./DesktopStatusBar";
+import { DesktopToolbar } from "./DesktopToolbar";
 import { ExportPanel } from "./ExportPanel";
-import { NAV_ITEMS, SECTION_COPY, type NavSection } from "./sectionModel";
+import { SECTION_COPY, type NavSection } from "./sectionModel";
 
 type Theme = "dark" | "light";
 
@@ -153,250 +148,60 @@ export function CommandCenterShell() {
     };
   }, [desktopActionHandler]);
 
+  const sourceCount = summary?.connectors.length ?? 0;
+  const connectedSourceCount = summary?.connectors.filter((connector) => connector.status === "connected").length ?? 0;
+
   return (
     <TooltipProvider delayDuration={150}>
-      <div className="min-h-screen bg-background text-foreground">
-        <div className="grid min-h-screen grid-cols-[196px_minmax(0,1fr)] grid-rows-[1fr_auto] max-[980px]:grid-cols-1">
-          <Sidebar
-            activeSection={activeSection}
-            dataMode={dataMode}
-            setDataMode={handleDataModeChange}
-            setActiveSection={setActiveSection}
-            autoRefreshDelayMs={autoRefreshDelayMs}
-          />
-          <main className="min-w-0 px-6 py-6 max-[980px]:px-4">
-            <DashboardHeader
+      <div className="desktop-shell">
+        <DesktopToolbar
+          activeSection={activeSection}
+          dataMode={dataMode}
+          hasSummary={Boolean(summary)}
+          isExportPanelOpen={isExportPanelOpen}
+          isRefreshing={refresh.isPending}
+          lastRefresh={summary?.lastRefreshLabel ?? "not yet"}
+          theme={theme}
+          onDataModeChange={handleDataModeChange}
+          onExportBadge={toggleBadgeExportPanel}
+          onExportCsv={handleCsvExport}
+          onRefresh={refreshNow}
+          onSectionChange={setActiveSection}
+          onToggleTheme={toggleTheme}
+        />
+        <main className="desktop-main">
+          <DashboardHeader activeSection={activeSection} />
+          {isExportPanelOpen && summary ? <ExportPanel summary={summary} onClose={() => setIsExportPanelOpen(false)} /> : null}
+          {summary ? (
+            <CommandCenterContent
               activeSection={activeSection}
-              dataMode={dataMode}
-              setDataMode={handleDataModeChange}
-              theme={theme}
-              onToggleTheme={toggleTheme}
-              lastRefresh={summary?.lastRefreshLabel ?? "not yet"}
               isRefreshing={refresh.isPending}
               onRefresh={refreshNow}
-              hasSummary={Boolean(summary)}
-              isExportPanelOpen={isExportPanelOpen}
-              onToggleExportPanel={toggleBadgeExportPanel}
-              onExportCsv={handleCsvExport}
+              summary={summary}
             />
-            <MobileSectionNav activeSection={activeSection} setActiveSection={setActiveSection} />
-            {isExportPanelOpen && summary ? <ExportPanel summary={summary} onClose={() => setIsExportPanelOpen(false)} /> : null}
-            {summary ? (
-              <CommandCenterContent
-                activeSection={activeSection}
-                isRefreshing={refresh.isPending}
-                onRefresh={() => refresh.mutate()}
-                summary={summary}
-              />
-            ) : (
-              <DashboardLoading hasError={query.isError} />
-            )}
-          </main>
-          <CommandCenterFooter />
-        </div>
+          ) : (
+            <DashboardLoading hasError={query.isError} />
+          )}
+        </main>
+        <DesktopStatusBar
+          autoRefreshDelayMs={autoRefreshDelayMs}
+          connectedSourceCount={connectedSourceCount}
+          dataMode={dataMode}
+          sourceCount={sourceCount}
+          version="v0.1.0"
+        />
       </div>
     </TooltipProvider>
   );
 }
 
-function Sidebar({
-  activeSection,
-  dataMode,
-  setDataMode,
-  setActiveSection,
-  autoRefreshDelayMs,
-}: {
-  activeSection: NavSection;
-  dataMode: DataMode;
-  setDataMode: (mode: DataMode) => void;
-  setActiveSection: (section: NavSection) => void;
-  autoRefreshDelayMs: number;
-}) {
-  return (
-    <aside className="row-span-2 flex min-h-screen flex-col border-r border-border bg-sidebar p-3 max-[980px]:hidden" aria-label="Primary">
-      <div className="mb-6 flex h-12 items-center gap-3 px-2">
-        <div className="grid h-8 w-8 place-items-center rounded-[8px] bg-primary/15 text-primary">
-          <Database aria-hidden size={20} />
-        </div>
-        <div className="text-lg font-semibold">TokenStack</div>
-      </div>
-      <nav className="space-y-1">
-        {NAV_ITEMS.map((item) => {
-          const Icon = item.icon;
-          const isActive = activeSection === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              className={cn(
-                "flex h-11 w-full items-center gap-3 rounded-[8px] px-3 text-left text-sm text-muted-foreground outline-none transition-colors hover:bg-primary/10 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
-                isActive && "bg-primary/15 text-foreground",
-              )}
-              aria-current={isActive ? "page" : undefined}
-              onClick={() => setActiveSection(item.id)}
-            >
-              <Icon aria-hidden size={18} />
-              {item.label}
-            </button>
-          );
-        })}
-      </nav>
-      <div className="mt-auto flex flex-col gap-3">
-        <DataModeSelect dataMode={dataMode} setDataMode={setDataMode} />
-        <div className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">
-          <div className="flex items-center justify-between">
-            <span>Auto refresh</span>
-            <span className="inline-flex items-center gap-1">
-              {Math.round(autoRefreshDelayMs / 1000)}s <ChevronDown size={13} aria-hidden />
-            </span>
-          </div>
-        </div>
-        <div className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">
-          <div className="flex items-center justify-between">
-            <span>Version</span>
-            <span>v0.1.0</span>
-          </div>
-        </div>
-      </div>
-    </aside>
-  );
-}
-
-function MobileSectionNav({ activeSection, setActiveSection }: { activeSection: NavSection; setActiveSection: (section: NavSection) => void }) {
-  return (
-    <nav className="mb-4 hidden gap-2 overflow-x-auto border-b border-border pb-3 max-[980px]:flex" aria-label="Mobile sections">
-      {NAV_ITEMS.map((item) => {
-        const Icon = item.icon;
-        const isActive = activeSection === item.id;
-        return (
-          <button
-            key={item.id}
-            type="button"
-            aria-label={`Open ${item.label}`}
-            aria-current={isActive ? "page" : undefined}
-            className={cn(
-              "inline-flex h-9 shrink-0 items-center gap-2 rounded-[8px] border border-border bg-card px-3 text-xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              isActive && "border-primary/50 bg-primary/15 text-foreground",
-            )}
-            onClick={() => setActiveSection(item.id)}
-          >
-            <Icon size={15} aria-hidden />
-            {item.label}
-          </button>
-        );
-      })}
-    </nav>
-  );
-}
-
-function DataModeSelect({ dataMode, setDataMode }: { dataMode: DataMode; setDataMode: (mode: DataMode) => void }) {
-  return (
-    <label className="rounded-[8px] border border-border bg-card p-3 text-xs text-muted-foreground">
-      <span className="mb-2 flex items-center justify-between">
-        Data mode <span className="inline-flex items-center gap-1 text-mint">Live</span>
-      </span>
-      <select
-        value={dataMode}
-        onChange={(event) => setDataMode(event.target.value as DataMode)}
-        className="w-full rounded-[6px] border border-border bg-background px-2 py-1.5 text-xs text-foreground"
-        aria-label="Data mode"
-      >
-        <option value="combined">Local + Remote</option>
-        <option value="local">Local</option>
-        <option value="remote">Remote</option>
-      </select>
-    </label>
-  );
-}
-
-function DashboardHeader({
-  activeSection,
-  dataMode,
-  setDataMode,
-  theme,
-  onToggleTheme,
-  lastRefresh,
-  isRefreshing,
-  onRefresh,
-  hasSummary,
-  isExportPanelOpen,
-  onToggleExportPanel,
-  onExportCsv,
-}: {
-  activeSection: NavSection;
-  dataMode: DataMode;
-  setDataMode: (mode: DataMode) => void;
-  theme: Theme;
-  onToggleTheme: () => void;
-  lastRefresh: string;
-  isRefreshing: boolean;
-  onRefresh: () => void;
-  hasSummary: boolean;
-  isExportPanelOpen: boolean;
-  onToggleExportPanel: () => void;
-  onExportCsv: () => void;
-}) {
+function DashboardHeader({ activeSection }: { activeSection: NavSection }) {
   const copy = SECTION_COPY[activeSection];
 
   return (
-    <header className="mb-6 flex flex-wrap items-start justify-between gap-4" id={activeSection}>
-      <div>
-        <h1 className="text-[26px] font-semibold leading-tight tracking-normal">{copy.heading}</h1>
-        <p className="mt-2 text-sm text-muted-foreground">{copy.description}</p>
-      </div>
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        <span className="text-xs text-muted-foreground">Last refresh: {lastRefresh}</span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex" aria-label={!hasSummary ? "Export badge requires loaded dashboard data" : undefined} tabIndex={!hasSummary ? 0 : undefined}>
-              <Button variant="secondary" aria-label="Export badge" disabled={!hasSummary} onClick={onToggleExportPanel} className={cn(isExportPanelOpen && "border-primary/60 bg-primary/15 text-primary")}>
-                <ImageDown size={16} aria-hidden />
-                <span>Badge</span>
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>{hasSummary ? "Create a shareable TokenStack badge." : "Exports require loaded dashboard data."}</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="inline-flex" aria-label={!hasSummary ? "Export CSV requires loaded dashboard data" : undefined} tabIndex={!hasSummary ? 0 : undefined}>
-              <Button variant="secondary" aria-label="Export CSV" disabled={!hasSummary} onClick={onExportCsv}>
-                <Download size={16} aria-hidden />
-                <span>CSV</span>
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>{hasSummary ? "Export dashboard usage bundle." : "Exports require loaded dashboard data."}</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="Refresh now" disabled={isRefreshing} onClick={onRefresh}>
-              <RefreshCcw size={17} className={cn(isRefreshing && "animate-spin")} aria-hidden />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Refresh local imports and available snapshots.</TooltipContent>
-        </Tooltip>
-        <Badge tone="success" className="h-9 gap-2 px-3">
-          <Database size={15} aria-hidden /> Local app
-        </Badge>
-        <Badge className="h-9 gap-2 px-3">
-          <Gauge size={14} aria-hidden /> No token display
-        </Badge>
-        <label className="sr-only" htmlFor="header-data-mode">Data mode</label>
-        <select
-          id="header-data-mode"
-          value={dataMode}
-          onChange={(event) => setDataMode(event.target.value as DataMode)}
-          className="h-9 rounded-[8px] border border-primary/40 bg-primary/10 px-3 text-sm text-primary"
-        >
-          <option value="combined">Local + Remote</option>
-          <option value="local">Local</option>
-          <option value="remote">Remote</option>
-        </select>
-        <Button variant="secondary" size="icon" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`} onClick={onToggleTheme}>
-          {theme === "dark" ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
-        </Button>
-      </div>
+    <header className="mb-4" id={activeSection}>
+      <h1 className="text-[24px] font-semibold leading-tight tracking-normal">{copy.heading}</h1>
+      <p className="mt-1 text-sm text-muted-foreground">{copy.description}</p>
     </header>
   );
 }
@@ -829,17 +634,6 @@ function CoverageTooltip({ coverage, children }: { coverage: MetricCoverage; chi
         <div className="mt-2 text-muted-foreground">Formula: {coverage.formulaVersion}</div>
       </TooltipContent>
     </Tooltip>
-  );
-}
-
-function CommandCenterFooter() {
-  return (
-    <footer className="col-span-2 flex h-16 items-center justify-around border-t border-border bg-sidebar px-6 text-sm text-muted-foreground max-[980px]:col-span-1 max-[760px]:h-auto max-[760px]:flex-col max-[760px]:items-start max-[760px]:gap-3 max-[760px]:py-4">
-      <span className="inline-flex items-center gap-2"><Database size={16} aria-hidden /> Local-first dashboard</span>
-      <span className="inline-flex items-center gap-2"><ImageDown size={16} aria-hidden /> Badge export</span>
-      <span className="inline-flex items-center gap-2"><Download size={16} aria-hidden /> CSV bundle</span>
-      <span className="inline-flex items-center gap-2"><Info size={16} aria-hidden /> MIT License</span>
-    </footer>
   );
 }
 
