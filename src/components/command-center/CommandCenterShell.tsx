@@ -103,7 +103,7 @@ export function CommandCenterShell() {
     if (!summary) {
       return;
     }
-    downloadTextFile(buildUsageCsvFilename(), buildDashboardUsageCsv(summary), "text/csv;charset=utf-8");
+    void downloadTextFile(buildUsageCsvFilename(), buildDashboardUsageCsv(summary), "text/csv;charset=utf-8");
   }, [summary]);
   const openBadgeExport = useCallback(() => {
     if (summary) {
@@ -350,15 +350,26 @@ function SetupDiagnosticsCard({
   const latestImport = diagnostics?.latestImportRun;
   const localRoots = diagnostics?.localRoots ?? [];
   const connectorRuns = diagnostics?.connectorRuns ?? [];
-  const exportDiagnostics = () => {
+  const [exportStatus, setExportStatus] = useState<{ tone: "success" | "warning" | "muted"; message: string } | null>(null);
+  const exportDiagnostics = async () => {
     if (!diagnostics) {
       return;
     }
-    downloadTextFile(
+    setExportStatus({ tone: "muted", message: "Saving diagnostics..." });
+    const result = await downloadTextFile(
       buildSetupDiagnosticsFilename(),
       buildSetupDiagnosticsJson(diagnostics),
       "application/json;charset=utf-8",
     );
+    if (result.status === "saved") {
+      setExportStatus({ tone: "success", message: `Saved to ${result.path}` });
+      return;
+    }
+    if (result.status === "downloaded") {
+      setExportStatus({ tone: "success", message: "Downloaded diagnostics JSON" });
+      return;
+    }
+    setExportStatus({ tone: "warning", message: `Export failed: ${result.error}` });
   };
 
   return (
@@ -415,6 +426,21 @@ function SetupDiagnosticsCard({
               <DiagnosticCount label="Stored tokens" value={diagnostics?.usageTotalTokens ?? 0} />
               <DiagnosticCount label="Source files" value={diagnostics?.sourceDocumentCount ?? 0} />
             </dl>
+            {exportStatus ? (
+              <div
+                className={cn(
+                  "rounded-[6px] border px-3 py-2 text-xs",
+                  exportStatus.tone === "success" && "border-mint/35 bg-mint/10 text-mint",
+                  exportStatus.tone === "warning" && "border-amber/35 bg-amber/10 text-amber",
+                  exportStatus.tone === "muted" && "border-border bg-secondary/35 text-muted-foreground",
+                )}
+                role="status"
+              >
+                <span className="block truncate" title={exportStatus.message}>
+                  {exportStatus.message}
+                </span>
+              </div>
+            ) : null}
             {latestImport?.warningSamples.length ? (
               <div className="space-y-2 border-t border-border pt-3">
                 <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Warning samples</div>

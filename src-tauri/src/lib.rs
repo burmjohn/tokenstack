@@ -28,7 +28,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard_summary,
             commands::get_setup_diagnostics,
-            commands::refresh_all
+            commands::refresh_all,
+            commands::save_text_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running TokenStack");

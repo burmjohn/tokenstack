@@ -87,6 +87,12 @@ pub fn get_setup_diagnostics() -> Result<SetupDiagnosticsDto, String> {
     )
 }
 
+#[tauri::command]
+pub fn save_text_export(filename: String, contents: String) -> Result<String, String> {
+    save_text_export_to_dir(&filename, &contents, &default_download_dir())
+        .map(|path| path_label(&path))
+}
+
 pub fn get_dashboard_summary_from_path(
     data_mode: String,
     app_data_dir: PathBuf,
@@ -221,6 +227,42 @@ fn usage_total_tokens(conn: &Connection) -> rusqlite::Result<i64> {
 
 fn path_label(path: &Path) -> String {
     path.display().to_string()
+}
+
+fn save_text_export_to_dir(
+    filename: &str,
+    contents: &str,
+    target_dir: &Path,
+) -> Result<PathBuf, String> {
+    validate_export_filename(filename)?;
+    std::fs::create_dir_all(target_dir).map_err(|error| error.to_string())?;
+    let target_path = target_dir.join(filename);
+    std::fs::write(&target_path, contents).map_err(|error| error.to_string())?;
+    Ok(target_path)
+}
+
+fn validate_export_filename(filename: &str) -> Result<(), String> {
+    let valid = !filename.is_empty()
+        && filename.len() <= 160
+        && filename.starts_with("tokenstack-")
+        && filename.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err("invalid export filename".to_string())
+    }
+}
+
+fn default_download_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("USERPROFILE") {
+        return PathBuf::from(path).join("Downloads");
+    }
+    if let Some(path) = std::env::var_os("HOME") {
+        return PathBuf::from(path).join("Downloads");
+    }
+    default_app_data_dir()
 }
 
 fn refresh_all_with_auth_home(
@@ -538,5 +580,39 @@ mod tests {
                 .as_deref(),
             Some("auth document is unavailable")
         );
+    }
+
+    #[test]
+    fn save_text_export_writes_safe_file_to_target_directory() {
+        let target_dir = tempdir().unwrap();
+
+        let saved_path = save_text_export_to_dir(
+            "tokenstack-diagnostics-2026-07-03.json",
+            "{\"diagnostics\":true}",
+            target_dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            saved_path,
+            target_dir
+                .path()
+                .join("tokenstack-diagnostics-2026-07-03.json")
+        );
+        assert_eq!(
+            fs::read_to_string(saved_path).unwrap(),
+            "{\"diagnostics\":true}"
+        );
+    }
+
+    #[test]
+    fn save_text_export_rejects_path_traversal_filenames() {
+        let target_dir = tempdir().unwrap();
+
+        let error =
+            save_text_export_to_dir("../auth.json", "secret", target_dir.path()).unwrap_err();
+
+        assert!(error.contains("invalid export filename"));
+        assert!(!target_dir.path().join("auth.json").exists());
     }
 }
