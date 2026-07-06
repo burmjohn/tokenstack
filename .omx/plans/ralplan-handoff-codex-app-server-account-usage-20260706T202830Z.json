@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "workflow": "ralplan",
+  "task_slug": "codex-app-server-account-usage",
+  "created_at_utc": "2026-07-06T20:28:30Z",
+  "status": "complete",
+  "planning_artifacts": {
+    "context_snapshot": ".omx/context/codex-app-server-account-usage-20260706T202830Z.md",
+    "prd": ".omx/plans/prd-codex-app-server-account-usage-20260706T202830Z.md",
+    "test_spec": ".omx/plans/test-spec-codex-app-server-account-usage-20260706T202830Z.md",
+    "implementation_plan": ".omx/plans/implementation-plan-codex-app-server-account-usage-20260706T202830Z.md"
+  },
+  "ralplan_architect_review": {
+    "path": ".omx/plans/architect-review-codex-app-server-account-usage-20260706T202830Z-approve.md",
+    "verdict": "APPROVE",
+    "order": 1,
+    "completed_after": [
+      ".omx/plans/architect-review-codex-app-server-account-usage-20260706T202830Z-iter1.md",
+      ".omx/plans/architect-review-codex-app-server-account-usage-20260706T202830Z-iter2.md",
+      ".omx/plans/architect-review-codex-app-server-account-usage-20260706T202830Z-iter3.md"
+    ]
+  },
+  "ralplan_critic_review": {
+    "path": ".omx/plans/critic-review-codex-app-server-account-usage-20260706T202830Z-approve.md",
+    "verdict": "APPROVE",
+    "order": 2,
+    "requires_architect_approval": true
+  },
+  "ralplan_consensus_gate": {
+    "complete": true,
+    "architect_then_critic_order": true,
+    "max_iterations": 5,
+    "iterations_used": 4
+  },
+  "decision": "Use codex app-server JSON-RPC as TokenStack's authoritative account connector for profile-scale usage, daily buckets, reset credits, and rate limits. Keep local history import only for local/per-session detail. Remove raw auth.json reading and private ChatGPT endpoint scraping from the default account refresh path.",
+  "recommended_next_lane": "ultragoal",
+  "team_option": "Use team for parallel backend, frontend diagnostics, and test/docs lanes under an ultragoal ledger.",
+  "ralph_fallback": "Use only if the user explicitly wants a single-owner persistence loop instead of durable goal tracking.",
+  "available_agent_types": [
+    "executor",
+    "test-engineer",
+    "architect",
+    "critic",
+    "code-reviewer",
+    "verifier",
+    "git-master"
+  ]
+}
