@@ -1,0 +1,75 @@
+{
+  "id": "codex-app-server-account-usage-v2-20260707T003812Z",
+  "created_at": "2026-07-07T00:38:12Z",
+  "objective": "Make TokenStack show account-level Codex usage, rate-limit windows, and reset credits on Windows by using the authenticated Codex app-server, while keeping local JSONL import as local history only.",
+  "recommended_workflow": "ultragoal",
+  "read_first": [
+    ".omx/context/codex-app-server-account-usage-v2-20260707T003812Z.md",
+    ".omx/plans/research-codex-app-server-examples-20260707T003812Z.md",
+    ".omx/plans/route-plan-codex-app-server-account-usage-v2-20260707T003812Z.md",
+    ".omx/plans/test-spec-codex-app-server-account-usage-v2-20260707T003812Z.md",
+    ".omx/plans/ultragoal-handoff-codex-app-server-account-usage-v2-20260707T003812Z.md",
+    "AGENTS.md"
+  ],
+  "primary_route": {
+    "source": "Codex CLI app-server over stdio",
+    "launch_preferred": [
+      "codex",
+      "app-server",
+      "--listen",
+      "stdio://",
+      "-c",
+      "mcp_servers={}"
+    ],
+    "launch_fallback": [
+      "codex",
+      "app-server"
+    ],
+    "methods": [
+      "initialize",
+      "initialized",
+      "account/read",
+      "account/rateLimits/read",
+      "account/usage/read"
+    ],
+    "forbidden_methods": [
+      "account/rateLimitResetCredit/consume"
+    ]
+  },
+  "hard_requirements": [
+    "Do not parse or export raw auth tokens.",
+    "Do not use private ChatGPT or Codex web endpoints.",
+    "Do not launch interactive Codex TUI or PTY flows during automatic refresh.",
+    "Do not use Windows local files as account profile totals.",
+    "Keep account snapshots separate from local usage events.",
+    "Kill and wait for app-server children on timeout or error.",
+    "Coalesce concurrent account refreshes.",
+    "Export sanitized diagnostics that explain Windows failures."
+  ],
+  "implementation_stages": [
+    "Fixture spike and protocol tests",
+    "Rust app-server JSON-RPC client",
+    "Account snapshot connector",
+    "Normalization and storage migrations",
+    "UI and IPC state corrections",
+    "Diagnostics export",
+    "Refresh coalescing and cooldown",
+    "Documentation and Windows smoke"
+  ],
+  "verification": [
+    "cargo test --manifest-path src-tauri/Cargo.toml",
+    "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "pnpm test",
+    "pnpm build",
+    "pnpm secret:scan",
+    "pnpm fixture:scan"
+  ],
+  "acceptance": [
+    "Dashboard account lifetime usage comes from account/usage/read when available.",
+    "Rate-limit windows and reset credits come from account/rateLimits/read.",
+    "Missing account snapshots render unavailable or degraded, not zero.",
+    "Local history remains local history.",
+    "Diagnostics export writes a sanitized file and returns the path.",
+    "Tests prove no reset-credit consume call exists."
+  ]
+}
