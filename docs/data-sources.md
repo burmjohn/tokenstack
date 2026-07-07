@@ -6,7 +6,9 @@ TokenStack supports two source families:
 - Codex account snapshots read through `codex app-server` over stdio.
 
 Local history is local-only evidence. It can explain imported sessions on the
-current machine, but it must not replace Codex account lifetime totals.
+current machine, but it must not be labeled as Codex account lifetime totals. In
+combined mode, TokenStack can show local history as a labeled fallback when no
+account snapshot is available.
 
 Account snapshots provide Codex profile usage, daily buckets, rate-limit
 windows, and reset-credit availability. TokenStack launches the installed Codex
@@ -15,9 +17,10 @@ API enabled, and calls `account/read`, `account/rateLimits/read`, and
 `account/usage/read`.
 
 On Windows, TokenStack resolves the Codex executable from an explicit configured
-path when supplied, then `TOKENSTACK_CODEX_BIN`, then `PATH`. Setup diagnostics
-show the selected executable, launch mode, first failing account stage, and last
-successful account refresh.
+path when supplied, then `TOKENSTACK_CODEX_BIN`, then `PATH`, then common desktop
+and npm-global install locations. Setup diagnostics show the selected
+executable, launch mode, first failing account stage, and last successful
+account refresh.
 
 TokenStack must not parse raw Codex auth tokens, call private ChatGPT/Codex web
 endpoints, launch automatic interactive TUI/PTTY fallbacks, or call the reset

@@ -521,10 +521,24 @@ fn resolve_codex_executable(
         }
     }
 
+    for candidate in fallback_codex_candidates("codex") {
+        let label = candidate.display().to_string();
+        if candidates.iter().any(|seen| seen == &label) {
+            continue;
+        }
+        candidates.push(label);
+        if candidate.exists() {
+            return Ok(CodexExecutable {
+                path: candidate,
+                candidates,
+            });
+        }
+    }
+
     Err(AccountConnectorError::new(
         AccountConnectorErrorKind::MissingCli,
         "resolve_codex",
-        "Codex CLI was not found on PATH. Configure the Codex executable or set TOKENSTACK_CODEX_BIN.",
+        "Codex CLI was not found in PATH or common app install locations. Configure the Codex executable or set TOKENSTACK_CODEX_BIN.",
     ))
 }
 
@@ -540,6 +554,59 @@ fn path_candidates(binary: &str) -> Vec<PathBuf> {
                 .map(move |suffix| dir.join(format!("{binary}{suffix}")))
         })
         .collect()
+}
+
+fn fallback_codex_candidates(binary: &str) -> Vec<PathBuf> {
+    let suffixes = executable_suffixes();
+    fallback_codex_candidate_dirs()
+        .into_iter()
+        .flat_map(|dir| {
+            suffixes
+                .iter()
+                .map(move |suffix| dir.join(format!("{binary}{suffix}")))
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn fallback_codex_candidate_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.to_path_buf());
+        }
+    }
+    if let Some(appdata) = env::var_os("APPDATA").map(PathBuf::from) {
+        dirs.push(appdata.join("npm"));
+    }
+    if let Some(local_appdata) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        dirs.push(local_appdata.join("Programs").join("Codex"));
+        dirs.push(local_appdata.join("Programs").join("OpenAI Codex"));
+    }
+    if let Some(program_files) = env::var_os("ProgramFiles").map(PathBuf::from) {
+        dirs.push(program_files.join("Codex"));
+        dirs.push(program_files.join("OpenAI Codex"));
+    }
+    if let Some(user_profile) = env::var_os("USERPROFILE").map(PathBuf::from) {
+        dirs.push(user_profile.join(".local").join("bin"));
+    }
+    dirs
+}
+
+#[cfg(not(windows))]
+fn fallback_codex_candidate_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.to_path_buf());
+        }
+    }
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        dirs.push(home.join(".local").join("bin"));
+    }
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs
 }
 
 #[cfg(windows)]

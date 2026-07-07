@@ -198,8 +198,9 @@ pub fn build_dashboard_summary(
         lifetime_delta,
         today_delta,
         month_delta,
+        profile_label,
         profile_coverage,
-    ) = if data_mode.includes_remote() {
+    ) = if data_mode.includes_remote() && account_usage.is_some() {
         (
             account_usage
                 .as_ref()
@@ -217,17 +218,42 @@ pub fn build_dashboard_summary(
             "Codex account snapshot",
             "Account daily bucket",
             "Account month-to-date",
+            "Account lifetime",
             account_coverage.clone(),
         )
-    } else {
+    } else if data_mode.includes_local() {
         (
             compact_tokens(local_lifetime),
             compact_tokens(local_today),
             compact_tokens(local_month),
-            "Imported local history",
-            "Local history day bucket",
-            "Local history month-to-date",
+            if data_mode.includes_remote() {
+                "Account unavailable; showing local history"
+            } else {
+                "Imported local history"
+            },
+            if data_mode.includes_remote() {
+                "Account unavailable; showing local day"
+            } else {
+                "Local history day bucket"
+            },
+            if data_mode.includes_remote() {
+                "Account unavailable; showing local month"
+            } else {
+                "Local history month-to-date"
+            },
+            "Local history tokens",
             local_coverage.clone(),
+        )
+    } else {
+        (
+            "Unavailable".to_string(),
+            "Unavailable".to_string(),
+            "Unavailable".to_string(),
+            "No account snapshot",
+            "No account snapshot",
+            "No account snapshot",
+            "Account lifetime",
+            account_coverage.clone(),
         )
     };
     let loaded_reset_credits = if data_mode.includes_remote() {
@@ -271,11 +297,7 @@ pub fn build_dashboard_summary(
         metrics: vec![
             metric_value(
                 "lifetime",
-                if data_mode.includes_remote() {
-                    "Account lifetime"
-                } else {
-                    "Local history tokens"
-                },
+                profile_label,
                 lifetime_value,
                 lifetime_delta,
                 &profile_coverage,
@@ -411,7 +433,9 @@ fn load_coverage(conn: &Connection) -> rusqlite::Result<Vec<CoverageDto>> {
         r#"
         SELECT metric_key, source_kind, coverage_percent, confidence, last_evidence_at_utc,
                formula_version, missing_facets_json, explanation
-        FROM source_coverage ORDER BY id DESC LIMIT 4
+        FROM source_coverage
+        WHERE id IN (SELECT MAX(id) FROM source_coverage GROUP BY metric_key)
+        ORDER BY id DESC
         "#,
     )?;
     let rows = stmt.query_map([], |row| {
@@ -1397,6 +1421,68 @@ mod tests {
         assert_eq!(reset_metric.coverage.confidence, "unavailable");
         assert!(summary.reset_credits.is_empty());
         assert!(summary.rate_limit_windows.is_empty());
+    }
+
+    #[test]
+    fn combined_mode_falls_back_to_local_usage_when_account_snapshot_is_missing() {
+        let conn = seeded_conn();
+        crate::db::insert_account_refresh_error(
+            &conn,
+            &AccountConnectorError {
+                kind: AccountConnectorErrorKind::MissingCli,
+                stage: "resolve_codex".to_string(),
+                public_message: "Codex CLI was not found".to_string(),
+            },
+        )
+        .unwrap();
+
+        let summary = build_dashboard_summary(&conn, "combined").unwrap();
+        let lifetime = summary
+            .metrics
+            .iter()
+            .find(|metric| metric.key == "lifetime")
+            .unwrap();
+
+        assert_eq!(lifetime.value, "175");
+        assert_eq!(lifetime.label, "Local history tokens");
+        assert!(lifetime.delta.contains("Account unavailable"));
+        assert_ne!(lifetime.status, "warning");
+    }
+
+    #[test]
+    fn coverage_summary_uses_latest_row_per_metric() {
+        let conn = open_memory().unwrap();
+        crate::db::record_source_coverage(
+            &conn,
+            "local-usage",
+            "Local history",
+            25,
+            "low",
+            &["old parse result".to_string()],
+            "Older local history coverage.",
+        )
+        .unwrap();
+        crate::db::record_source_coverage(
+            &conn,
+            "local-usage",
+            "Local history",
+            72,
+            "medium",
+            &["all event shapes parseable".to_string()],
+            "Latest local history coverage.",
+        )
+        .unwrap();
+
+        let summary = build_dashboard_summary(&conn, "combined").unwrap();
+        let local_rows = summary
+            .coverage
+            .iter()
+            .filter(|coverage| coverage.metric_key == "local-usage")
+            .collect::<Vec<_>>();
+
+        assert_eq!(local_rows.len(), 1);
+        assert_eq!(local_rows[0].coverage_percent, 72);
+        assert_eq!(local_rows[0].explanation, "Latest local history coverage.");
     }
 
     #[test]

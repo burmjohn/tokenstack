@@ -464,8 +464,9 @@ mod tests {
             get_dashboard_summary_from_path("local".to_string(), app_dir.path().to_path_buf())
                 .unwrap();
 
-        assert_eq!(refreshed.metrics[0].value, "Unavailable");
-        assert_eq!(reopened.metrics[0].value, "Unavailable");
+        assert_eq!(refreshed.metrics[0].value, "321");
+        assert_eq!(reopened.metrics[0].value, "321");
+        assert_eq!(reopened.metrics[0].label, "Local history tokens");
         assert_eq!(local.metrics[0].value, "321");
         let account_connector = reopened
             .connectors

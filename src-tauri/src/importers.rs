@@ -26,6 +26,7 @@ impl LocalHistoryImporter {
             events_imported: 0,
             warnings: Vec::new(),
         };
+        let mut parseable_events = 0;
 
         for file in self.discover_files()? {
             summary.files_seen += 1;
@@ -52,6 +53,7 @@ impl LocalHistoryImporter {
                 summary.events_seen += 1;
                 match parse_usage_event(line, doc_id, &path_hash, line_index) {
                     Ok(Some(event)) => {
+                        parseable_events += 1;
                         if insert_usage_event(conn, &event)? {
                             summary.events_imported += 1;
                         }
@@ -68,7 +70,8 @@ impl LocalHistoryImporter {
             }
         }
 
-        let (coverage, confidence, explanation, missing) = local_coverage(&summary);
+        let (coverage, confidence, explanation, missing) =
+            local_coverage(&summary, parseable_events);
         record_source_coverage(
             conn,
             "local-usage",
@@ -131,17 +134,39 @@ pub fn parse_usage_event(
         .or_else(|| value.pointer("/payload/usage"))
         .or_else(|| value.pointer("/payload/info/last_token_usage"))
         .or_else(|| value.pointer("/payload/info/total_token_usage"))
+        .or_else(|| value.pointer("/payload/info"))
         .unwrap_or(&value);
-    let input = number_at(usage, &["input_tokens", "input", "prompt_tokens"]);
-    let output = number_at(usage, &["output_tokens", "output", "completion_tokens"]);
-    let cache_read = number_at(usage, &["cache_read_tokens", "cached_input_tokens"]);
-    let cache_write = number_at(usage, &["cache_write_tokens"]);
-    let explicit_total = number_at(usage, &["total_tokens", "tokens"]);
+    let input = number_at(
+        usage,
+        &["input_tokens", "inputTokens", "input", "prompt_tokens"],
+    );
+    let output = number_at(
+        usage,
+        &[
+            "output_tokens",
+            "outputTokens",
+            "output",
+            "completion_tokens",
+        ],
+    );
+    let cache_read = number_at(
+        usage,
+        &[
+            "cache_read_tokens",
+            "cacheReadTokens",
+            "cached_input_tokens",
+            "cachedInputTokens",
+        ],
+    );
+    let cache_write = number_at(usage, &["cache_write_tokens", "cacheWriteTokens"]);
+    let reasoning_output = number_at(usage, &["reasoning_output_tokens", "reasoningOutputTokens"]);
+    let explicit_total = number_at(usage, &["total_tokens", "totalTokens", "tokens"]);
     let total = explicit_total.unwrap_or_else(|| {
         input.unwrap_or(0)
             + output.unwrap_or(0)
             + cache_read.unwrap_or(0)
             + cache_write.unwrap_or(0)
+            + reasoning_output.unwrap_or(0)
     });
 
     if total <= 0 {
@@ -281,8 +306,11 @@ pub fn hash_text(input: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn local_coverage(summary: &ImportRunSummary) -> (i64, &'static str, &'static str, Vec<String>) {
-    if summary.events_imported == 0 {
+fn local_coverage(
+    summary: &ImportRunSummary,
+    parseable_events: usize,
+) -> (i64, &'static str, &'static str, Vec<String>) {
+    if parseable_events == 0 {
         return (
             0,
             "unavailable",
@@ -368,6 +396,27 @@ mod tests {
     }
 
     #[test]
+    fn imports_codex_app_token_count_info_events() {
+        let dir = tempdir().unwrap();
+        write_jsonl(
+            dir.path(),
+            "rollout-2026-07-07T00-00-00.jsonl",
+            &[
+                r#"{"timestamp":"2026-07-07T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":3,"reasoning_output_tokens":2,"total_tokens":19},"rate_limits":{"primary":{"used_percent":12.5}}}}"#,
+            ],
+        );
+        let conn = open_memory().unwrap();
+        let summary = LocalHistoryImporter::new(vec![dir.path().to_path_buf()])
+            .import_into(&conn)
+            .unwrap();
+
+        assert_eq!(summary.events_imported, 1);
+        assert_eq!(summary.warnings, Vec::<String>::new());
+        assert_eq!(count_usage_events(&conn).unwrap(), 1);
+        assert_eq!(usage_total(&conn).unwrap(), 19);
+    }
+
+    #[test]
     fn skips_unknown_jsonl_shapes_with_warning() {
         let dir = tempdir().unwrap();
         write_jsonl(
@@ -408,6 +457,34 @@ mod tests {
         assert_eq!(importer.import_into(&conn).unwrap().events_imported, 1);
         assert_eq!(importer.import_into(&conn).unwrap().events_imported, 0);
         assert_eq!(count_usage_events(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn reimported_duplicate_events_keep_local_coverage_available() {
+        let dir = tempdir().unwrap();
+        write_jsonl(
+            dir.path(),
+            "history.jsonl",
+            &[
+                r#"{"id":"event-1","type":"token_count","timestamp":"2026-07-02T18:00:00Z","usage":{"total_tokens":100}}"#,
+            ],
+        );
+        let conn = open_memory().unwrap();
+        let importer = LocalHistoryImporter::new(vec![dir.path().to_path_buf()]);
+        importer.import_into(&conn).unwrap();
+        let summary = importer.import_into(&conn).unwrap();
+
+        let (coverage_percent, confidence): (i64, String) = conn
+            .query_row(
+                "SELECT coverage_percent, confidence FROM source_coverage WHERE metric_key = 'local-usage' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(summary.events_imported, 0);
+        assert_eq!(coverage_percent, 100);
+        assert_eq!(confidence, "high");
     }
 
     #[test]
