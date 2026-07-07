@@ -15,4 +15,8 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 ```
 
-Safety tests prove `/consume` and mutation methods are rejected before any network call. Import tests prove synthetic local history imports are deterministic and idempotent.
+App-server protocol tests use a fake Codex CLI process to prove TokenStack only
+calls the account read methods, handles fallback launch, timeouts, logged-out
+states, partial method failures, notifications, and out-of-order responses.
+Import tests prove synthetic local history imports are deterministic and
+idempotent.

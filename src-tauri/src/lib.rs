@@ -1,17 +1,15 @@
 #![cfg_attr(not(feature = "tauri-app"), allow(dead_code))]
 
 mod analytics;
-mod auth;
+mod codex_app_server;
 #[cfg(feature = "tauri-app")]
 mod commands;
-mod connectors;
 mod db;
 #[cfg(feature = "tauri-app")]
 mod desktop;
 mod desktop_menu;
 mod discovery;
 mod importers;
-mod safety;
 mod telemetry;
 
 #[cfg(feature = "tauri-app")]
@@ -28,6 +26,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard_summary,
             commands::get_setup_diagnostics,
+            commands::export_diagnostics,
             commands::refresh_all,
             commands::save_text_export
         ])

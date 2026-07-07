@@ -19,8 +19,8 @@ import { useDashboardSummary, useRefreshAll, useSetupDiagnostics } from "../../f
 import { listenForDesktopMenuCommands } from "../../features/desktop/commands";
 import { installDesktopContextMenu } from "../../features/desktop/contextMenu";
 import { buildDashboardUsageCsv, buildUsageCsvFilename } from "../../features/exports/csv";
-import { buildSetupDiagnosticsFilename, buildSetupDiagnosticsJson } from "../../features/exports/diagnostics";
 import { downloadTextFile } from "../../features/exports/download";
+import { exportSetupDiagnostics } from "../../lib/api/tauri";
 import type { DataMode, DashboardSummary, MetricCoverage, SetupDiagnostics } from "../../lib/schemas/dashboard";
 import { cn } from "../../lib/utils";
 import { createDesktopShellActionHandler } from "./desktopShellActions";
@@ -356,11 +356,7 @@ function SetupDiagnosticsCard({
       return;
     }
     setExportStatus({ tone: "muted", message: "Saving diagnostics..." });
-    const result = await downloadTextFile(
-      buildSetupDiagnosticsFilename(),
-      buildSetupDiagnosticsJson(diagnostics),
-      "application/json;charset=utf-8",
-    );
+    const result = await exportSetupDiagnostics(diagnostics);
     if (result.status === "saved") {
       setExportStatus({ tone: "success", message: `Saved to ${result.path}` });
       return;
@@ -392,6 +388,10 @@ function SetupDiagnosticsCard({
             <div className="grid grid-cols-2 gap-3 max-[560px]:grid-cols-1">
               <DiagnosticPath label="Database" value={diagnostics?.databasePath ?? "Unavailable"} />
               <DiagnosticPath label="Auth home" value={diagnostics?.authHome ?? "Unavailable"} />
+              <DiagnosticPath label="Codex executable" value={diagnostics?.selectedCodexExecutable ?? "Unavailable"} />
+              <DiagnosticPath label="Launch mode" value={diagnostics?.codexLaunchMode ?? "Unavailable"} />
+              <DiagnosticPath label="Account failure stage" value={diagnostics?.firstFailingAccountStage ?? "None"} />
+              <DiagnosticPath label="Last account refresh" value={diagnostics?.lastSuccessfulAccountRefresh ?? "Never"} />
             </div>
             <div>
               <div className="mb-2 text-xs font-medium uppercase tracking-normal text-muted-foreground">Local Codex folders</div>

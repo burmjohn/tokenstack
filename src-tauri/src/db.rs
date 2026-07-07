@@ -1,6 +1,8 @@
+use crate::codex_app_server::{AccountConnectorError, AccountMethodSnapshot, AccountSnapshot};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -128,6 +130,74 @@ CREATE TABLE IF NOT EXISTS source_coverage (
   missing_facets_json TEXT NOT NULL,
   explanation TEXT NOT NULL,
   FOREIGN KEY(snapshot_id) REFERENCES refresh_snapshots(id)
+);
+
+CREATE TABLE IF NOT EXISTS account_refresh_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at_utc TEXT NOT NULL,
+  completed_at_utc TEXT NOT NULL,
+  status TEXT NOT NULL,
+  selected_codex_executable TEXT,
+  launch_mode TEXT,
+  executable_candidates_json TEXT NOT NULL DEFAULT '[]',
+  first_failing_stage TEXT,
+  redacted_error_code TEXT,
+  redacted_error_message TEXT NOT NULL DEFAULT '',
+  stderr_tail TEXT NOT NULL DEFAULT '',
+  used_last_good_snapshot INTEGER NOT NULL DEFAULT 0,
+  method_statuses_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS account_identity_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  refresh_run_id INTEGER NOT NULL,
+  account_label TEXT,
+  plan TEXT,
+  FOREIGN KEY(refresh_run_id) REFERENCES account_refresh_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS account_usage_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  refresh_run_id INTEGER NOT NULL,
+  lifetime_tokens INTEGER,
+  FOREIGN KEY(refresh_run_id) REFERENCES account_refresh_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS account_daily_usage_buckets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  refresh_run_id INTEGER NOT NULL,
+  usage_date TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(refresh_run_id) REFERENCES account_refresh_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS account_reset_credit_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  refresh_run_id INTEGER NOT NULL,
+  available_count INTEGER,
+  expires_at_utc TEXT,
+  FOREIGN KEY(refresh_run_id) REFERENCES account_refresh_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS account_rate_limit_buckets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  refresh_run_id INTEGER NOT NULL,
+  bucket_id TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  FOREIGN KEY(refresh_run_id) REFERENCES account_refresh_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS account_rate_limit_windows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bucket_row_id INTEGER NOT NULL,
+  window_duration_mins INTEGER NOT NULL,
+  window_label TEXT NOT NULL,
+  used_percent REAL NOT NULL,
+  remaining_percent REAL NOT NULL,
+  resets_at_utc TEXT,
+  FOREIGN KEY(bucket_row_id) REFERENCES account_rate_limit_buckets(id)
 );
 "#];
 
@@ -338,6 +408,7 @@ pub fn record_source_coverage(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn insert_connector_run(
     conn: &Connection,
     connector_id: &str,
@@ -368,6 +439,7 @@ pub fn insert_connector_run(
     Ok(conn.last_insert_rowid())
 }
 
+#[cfg(test)]
 pub fn insert_reset_credit_batch(
     conn: &Connection,
     connector_run_id: i64,
@@ -398,6 +470,7 @@ pub fn insert_reset_credit_batch(
     Ok(())
 }
 
+#[cfg(test)]
 pub struct NewRateLimitWindow<'a> {
     pub connector_run_id: i64,
     pub window_key: &'a str,
@@ -408,6 +481,7 @@ pub struct NewRateLimitWindow<'a> {
     pub confidence: &'a str,
 }
 
+#[cfg(test)]
 pub fn insert_rate_limit_window(
     conn: &Connection,
     window: &NewRateLimitWindow<'_>,
@@ -434,6 +508,192 @@ pub fn insert_rate_limit_window(
     Ok(())
 }
 
+pub fn insert_account_snapshot(
+    conn: &Connection,
+    snapshot: &AccountSnapshot,
+) -> rusqlite::Result<i64> {
+    let run_id = insert_account_refresh_run(
+        conn,
+        &AccountRefreshRunInsert {
+            started_at_utc: &snapshot.diagnostics.started_at_utc,
+            completed_at_utc: &snapshot.diagnostics.completed_at_utc,
+            status: snapshot.status.as_str(),
+            selected_codex_executable: Some(&snapshot.launch.selected_executable),
+            launch_mode: Some(snapshot.launch.mode.as_str()),
+            executable_candidates: &snapshot.launch.candidates,
+            first_failing_stage: snapshot.diagnostics.first_failing_stage.as_deref(),
+            redacted_error_code: snapshot.diagnostics.redacted_error_code.as_deref(),
+            redacted_error_message: &snapshot.diagnostics.redacted_error_message,
+            stderr_tail: &snapshot.diagnostics.stderr_tail,
+            used_last_good_snapshot: snapshot.diagnostics.used_last_good_snapshot,
+            method_statuses: &snapshot.methods,
+        },
+    )?;
+
+    conn.execute(
+        r#"
+        INSERT INTO account_identity_snapshots (refresh_run_id, account_label, plan)
+        VALUES (?1, ?2, ?3)
+        "#,
+        params![
+            run_id,
+            snapshot.account.account_label,
+            snapshot.account.plan
+        ],
+    )?;
+    conn.execute(
+        r#"
+        INSERT INTO account_usage_snapshots (refresh_run_id, lifetime_tokens)
+        VALUES (?1, ?2)
+        "#,
+        params![run_id, snapshot.usage.lifetime_tokens],
+    )?;
+    for bucket in &snapshot.usage.daily_buckets {
+        conn.execute(
+            r#"
+            INSERT INTO account_daily_usage_buckets
+              (refresh_run_id, usage_date, input_tokens, output_tokens, total_tokens)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                run_id,
+                bucket.date,
+                bucket.input_tokens,
+                bucket.output_tokens,
+                bucket.total_tokens
+            ],
+        )?;
+    }
+    conn.execute(
+        r#"
+        INSERT INTO account_reset_credit_snapshots
+          (refresh_run_id, available_count, expires_at_utc)
+        VALUES (?1, ?2, ?3)
+        "#,
+        params![
+            run_id,
+            snapshot.reset_credits.available_count,
+            snapshot.reset_credits.expires_at_utc
+        ],
+    )?;
+    for bucket in &snapshot.rate_limits {
+        conn.execute(
+            r#"
+            INSERT INTO account_rate_limit_buckets (refresh_run_id, bucket_id, display_name)
+            VALUES (?1, ?2, ?3)
+            "#,
+            params![run_id, bucket.bucket_id, bucket.display_name],
+        )?;
+        let bucket_row_id = conn.last_insert_rowid();
+        for window in &bucket.windows {
+            conn.execute(
+                r#"
+                INSERT INTO account_rate_limit_windows
+                  (bucket_row_id, window_duration_mins, window_label, used_percent,
+                   remaining_percent, resets_at_utc)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+                params![
+                    bucket_row_id,
+                    window.window_duration_mins,
+                    window.window_label,
+                    window.used_percent,
+                    window.remaining_percent,
+                    window.resets_at_utc
+                ],
+            )?;
+        }
+    }
+
+    Ok(run_id)
+}
+
+pub fn insert_account_refresh_error(
+    conn: &Connection,
+    error: &AccountConnectorError,
+) -> rusqlite::Result<i64> {
+    let now = Utc::now().to_rfc3339();
+    insert_account_refresh_run(
+        conn,
+        &AccountRefreshRunInsert {
+            started_at_utc: &now,
+            completed_at_utc: &now,
+            status: "unavailable",
+            selected_codex_executable: None,
+            launch_mode: None,
+            executable_candidates: &[],
+            first_failing_stage: Some(&error.stage),
+            redacted_error_code: Some(account_error_code(error)),
+            redacted_error_message: &error.public_message,
+            stderr_tail: "",
+            used_last_good_snapshot: false,
+            method_statuses: &[AccountMethodSnapshot {
+                method: error.stage.clone(),
+                status: crate::codex_app_server::MethodStatus::Failed,
+                redacted_error: Some(error.public_message.clone()),
+            }],
+        },
+    )
+}
+
+struct AccountRefreshRunInsert<'a> {
+    started_at_utc: &'a str,
+    completed_at_utc: &'a str,
+    status: &'a str,
+    selected_codex_executable: Option<&'a str>,
+    launch_mode: Option<&'a str>,
+    executable_candidates: &'a [String],
+    first_failing_stage: Option<&'a str>,
+    redacted_error_code: Option<&'a str>,
+    redacted_error_message: &'a str,
+    stderr_tail: &'a str,
+    used_last_good_snapshot: bool,
+    method_statuses: &'a [AccountMethodSnapshot],
+}
+
+fn insert_account_refresh_run(
+    conn: &Connection,
+    insert: &AccountRefreshRunInsert<'_>,
+) -> rusqlite::Result<i64> {
+    conn.execute(
+        r#"
+        INSERT INTO account_refresh_runs
+          (started_at_utc, completed_at_utc, status, selected_codex_executable, launch_mode,
+           executable_candidates_json, first_failing_stage, redacted_error_code,
+           redacted_error_message, stderr_tail, used_last_good_snapshot, method_statuses_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        "#,
+        params![
+            insert.started_at_utc,
+            insert.completed_at_utc,
+            insert.status,
+            insert.selected_codex_executable,
+            insert.launch_mode,
+            serde_json::to_string(insert.executable_candidates)
+                .unwrap_or_else(|_| "[]".to_string()),
+            insert.first_failing_stage,
+            insert.redacted_error_code,
+            insert.redacted_error_message,
+            insert.stderr_tail,
+            if insert.used_last_good_snapshot { 1 } else { 0 },
+            serde_json::to_string(insert.method_statuses).unwrap_or_else(|_| "[]".to_string()),
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+fn account_error_code(error: &AccountConnectorError) -> &'static str {
+    match error.kind {
+        crate::codex_app_server::AccountConnectorErrorKind::MissingCli => "missing_cli",
+        crate::codex_app_server::AccountConnectorErrorKind::UnsupportedCli => "unsupported_cli",
+        crate::codex_app_server::AccountConnectorErrorKind::LoggedOut => "logged_out",
+        crate::codex_app_server::AccountConnectorErrorKind::Timeout => "timeout",
+        crate::codex_app_server::AccountConnectorErrorKind::Protocol => "protocol_error",
+        crate::codex_app_server::AccountConnectorErrorKind::Spawn => "spawn_failed",
+    }
+}
+
+#[cfg(test)]
 fn hash_reset_batch(
     credit_count: i64,
     expires_at_utc: DateTime<Utc>,

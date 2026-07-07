@@ -1,11 +1,30 @@
 # Data Sources
 
-TokenStack supports three source families:
+TokenStack supports two source families:
 
 - Local Codex history JSONL.
-- Known read-only reset-credit endpoint: `/wham/rate-limit-reset-credits`.
-- Undocumented read-only endpoints that are explicitly registered, schema-validated, and shown as `Undocumented (RO)`.
+- Codex account snapshots read through `codex app-server` over stdio.
 
-Fixtures must be synthetic. Real auth files, private user histories, and full private endpoint responses must not be committed.
+Local history is local-only evidence. It can explain imported sessions on the
+current machine, but it must not replace Codex account lifetime totals.
+
+Account snapshots provide Codex profile usage, daily buckets, rate-limit
+windows, and reset-credit availability. TokenStack launches the installed Codex
+CLI directly, initializes the app-server JSON-RPC session with the experimental
+API enabled, and calls `account/read`, `account/rateLimits/read`, and
+`account/usage/read`.
+
+On Windows, TokenStack resolves the Codex executable from an explicit configured
+path when supplied, then `TOKENSTACK_CODEX_BIN`, then `PATH`. Setup diagnostics
+show the selected executable, launch mode, first failing account stage, and last
+successful account refresh.
+
+TokenStack must not parse raw Codex auth tokens, call private ChatGPT/Codex web
+endpoints, launch automatic interactive TUI/PTTY fallbacks, or call the reset
+credit consume route.
+
+Fixtures must be synthetic. Real auth files, private user histories, prompt
+bodies, cookies, tokens, and raw JSONL conversation content must not be
+committed or exported.
 
 Unknown local history shapes produce warnings and lower source coverage instead of failing the whole import.

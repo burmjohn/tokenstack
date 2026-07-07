@@ -1,20 +1,13 @@
 use crate::analytics::{build_dashboard_summary, DashboardSummaryDto};
-use crate::auth::{parse_auth_document, AuthHandle, AuthLocator};
-use crate::connectors::{
-    ConnectorRunResult, KnownResetCreditsConnector, UndocumentedRateLimitsConnector,
-};
-use crate::db::{
-    insert_connector_run, insert_rate_limit_window, insert_reset_credit_batch, open_path,
-    NewRateLimitWindow,
-};
+use crate::codex_app_server::{refresh_account_snapshot, CodexAppServerConfig};
+use crate::db::{insert_account_refresh_error, insert_account_snapshot, open_path};
 use crate::discovery::{default_app_data_dir, default_auth_home, default_local_history_roots};
 use crate::importers::LocalHistoryImporter;
-use crate::telemetry::public_error;
+use crate::telemetry::redact_sensitive;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use url::Url;
 
 static REFRESH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -39,6 +32,10 @@ pub struct SetupDiagnosticsDto {
     pub app_data_dir: String,
     pub database_path: String,
     pub auth_home: String,
+    pub selected_codex_executable: Option<String>,
+    pub codex_launch_mode: Option<String>,
+    pub first_failing_account_stage: Option<String>,
+    pub last_successful_account_refresh: Option<String>,
     pub usage_event_count: i64,
     pub usage_total_tokens: i64,
     pub source_document_count: i64,
@@ -93,6 +90,13 @@ pub fn save_text_export(filename: String, contents: String) -> Result<String, St
         .map(|path| path_label(&path))
 }
 
+#[tauri::command]
+pub fn export_diagnostics() -> Result<String, String> {
+    let diagnostics = get_setup_diagnostics()?;
+    export_diagnostics_to_dir(&diagnostics, &default_app_data_dir().join("diagnostics"))
+        .map(|path| path_label(&path))
+}
+
 pub fn get_dashboard_summary_from_path(
     data_mode: String,
     app_data_dir: PathBuf,
@@ -112,6 +116,7 @@ fn setup_diagnostics_from_parts(
     let (
         latest_import_run,
         connector_runs,
+        account_refresh,
         usage_event_count,
         usage_total_tokens,
         source_document_count,
@@ -120,18 +125,30 @@ fn setup_diagnostics_from_parts(
         (
             latest_import_run_diagnostics(&conn).map_err(|error| error.to_string())?,
             connector_run_diagnostics(&conn).map_err(|error| error.to_string())?,
+            latest_account_refresh_diagnostics(&conn).map_err(|error| error.to_string())?,
             count_rows(&conn, "usage_events").map_err(|error| error.to_string())?,
             usage_total_tokens(&conn).map_err(|error| error.to_string())?,
             count_rows(&conn, "source_documents").map_err(|error| error.to_string())?,
         )
     } else {
-        (None, Vec::new(), 0, 0, 0)
+        (None, Vec::new(), None, 0, 0, 0)
     };
 
     Ok(SetupDiagnosticsDto {
         app_data_dir: path_label(&app_data_dir),
         database_path: path_label(&database_path),
         auth_home: path_label(&auth_home),
+        selected_codex_executable: account_refresh
+            .as_ref()
+            .and_then(|refresh| refresh.selected_codex_executable.clone()),
+        codex_launch_mode: account_refresh
+            .as_ref()
+            .and_then(|refresh| refresh.launch_mode.clone()),
+        first_failing_account_stage: account_refresh
+            .as_ref()
+            .and_then(|refresh| refresh.first_failing_stage.clone()),
+        last_successful_account_refresh: latest_successful_account_refresh(&database_path)
+            .map_err(|error| error.to_string())?,
         usage_event_count,
         usage_total_tokens,
         source_document_count,
@@ -139,6 +156,13 @@ fn setup_diagnostics_from_parts(
         latest_import_run,
         connector_runs,
     })
+}
+
+#[derive(Debug)]
+struct AccountRefreshDiagnosticsRow {
+    selected_codex_executable: Option<String>,
+    launch_mode: Option<String>,
+    first_failing_stage: Option<String>,
 }
 
 fn local_root_diagnostics(path: PathBuf) -> LocalRootDiagnosticsDto {
@@ -208,6 +232,47 @@ fn connector_run_diagnostics(
     rows.collect()
 }
 
+fn latest_account_refresh_diagnostics(
+    conn: &Connection,
+) -> rusqlite::Result<Option<AccountRefreshDiagnosticsRow>> {
+    conn.query_row(
+        r#"
+        SELECT selected_codex_executable, launch_mode, first_failing_stage
+        FROM account_refresh_runs
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+        [],
+        |row| {
+            Ok(AccountRefreshDiagnosticsRow {
+                selected_codex_executable: row.get(0)?,
+                launch_mode: row.get(1)?,
+                first_failing_stage: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+}
+
+fn latest_successful_account_refresh(database_path: &Path) -> rusqlite::Result<Option<String>> {
+    if !database_path.exists() {
+        return Ok(None);
+    }
+    let conn = open_path(database_path)?;
+    conn.query_row(
+        r#"
+        SELECT completed_at_utc
+        FROM account_refresh_runs
+        WHERE status = 'connected'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 fn parse_warning_samples(warnings_json: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(warnings_json).unwrap_or_default()
 }
@@ -269,7 +334,7 @@ fn refresh_all_with_auth_home(
     data_mode: String,
     app_data_dir: PathBuf,
     roots: Vec<PathBuf>,
-    auth_home: PathBuf,
+    _auth_home: PathBuf,
 ) -> Result<DashboardSummaryDto, String> {
     let _refresh_guard = refresh_lock()
         .lock()
@@ -279,7 +344,16 @@ fn refresh_all_with_auth_home(
     let _summary = importer
         .import_into(&conn)
         .map_err(|error| error.to_string())?;
-    refresh_remote_connectors(&conn, &auth_home)?;
+    if data_mode != "local" {
+        match refresh_account_snapshot(CodexAppServerConfig::default()) {
+            Ok(snapshot) => {
+                insert_account_snapshot(&conn, &snapshot).map_err(|error| error.to_string())?;
+            }
+            Err(error) => {
+                insert_account_refresh_error(&conn, &error).map_err(|error| error.to_string())?;
+            }
+        }
+    }
     build_dashboard_summary(&conn, &data_mode).map_err(|error| error.to_string())
 }
 
@@ -292,90 +366,61 @@ fn open_app_database(app_data_dir: &Path) -> Result<rusqlite::Connection, String
     open_path(&app_data_dir.join("tokenstack.sqlite3")).map_err(|error| error.to_string())
 }
 
-fn refresh_remote_connectors(conn: &Connection, auth_home: &Path) -> Result<(), String> {
-    let base_url = Url::parse("https://chatgpt.com").map_err(|error| error.to_string())?;
-    match load_auth_handle(auth_home) {
-        Ok(auth) => {
-            let reset_result = KnownResetCreditsConnector::new(base_url.clone()).fetch(&auth);
-            persist_connector_result(conn, &reset_result).map_err(|error| error.to_string())?;
-            let rate_limit_result = UndocumentedRateLimitsConnector::new(base_url).fetch(&auth);
-            persist_connector_result(conn, &rate_limit_result).map_err(|error| error.to_string())
+fn diagnostics_filename() -> String {
+    format!(
+        "tokenstack-diagnostics-{}.json",
+        chrono::Utc::now().format("%Y-%m-%d")
+    )
+}
+
+fn export_diagnostics_to_dir(
+    diagnostics: &SetupDiagnosticsDto,
+    target_dir: &Path,
+) -> Result<PathBuf, String> {
+    let contents = sanitized_diagnostics_json(diagnostics)?;
+    save_text_export_to_dir(&diagnostics_filename(), &contents, target_dir)
+}
+
+fn sanitized_diagnostics_json(diagnostics: &SetupDiagnosticsDto) -> Result<String, String> {
+    let mut value = serde_json::json!({
+        "schemaVersion": 1,
+        "generatedAtUtc": chrono::Utc::now().to_rfc3339(),
+        "app": {
+            "name": "TokenStack",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "runtime": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "timezone": "America/New_York",
+        },
+        "redaction": {
+            "status": "sanitized",
+            "excluded": ["auth tokens", "cookies", "prompt bodies", "raw JSONL conversation content"],
+        },
+        "diagnostics": diagnostics,
+    });
+    sanitize_json_value(&mut value);
+    serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+}
+
+fn sanitize_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = redact_sensitive(text);
         }
-        Err(error) => {
-            for connector_id in ["known-reset-credit", "undocumented-rate-limits"] {
-                let result = ConnectorRunResult {
-                    connector_id: connector_id.to_string(),
-                    status: "failed".to_string(),
-                    batches: Vec::new(),
-                    rate_limit_windows: Vec::new(),
-                    redacted_error: Some(public_error("auth_unavailable", &error)),
-                };
-                persist_connector_result(conn, &result).map_err(|error| error.to_string())?;
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sanitize_json_value(item);
             }
-            Ok(())
         }
-    }
-}
-
-fn load_auth_handle(auth_home: &Path) -> Result<AuthHandle, String> {
-    let locator = AuthLocator::new(auth_home.to_path_buf());
-    for candidate in locator.candidate_paths() {
-        if !candidate.exists() {
-            continue;
+        serde_json::Value::Object(map) => {
+            for value in map.values_mut() {
+                sanitize_json_value(value);
+            }
         }
-        let allowed = locator
-            .allowed_path(&candidate)
-            .map_err(|error| error.to_string())?;
-        let text = std::fs::read_to_string(allowed).map_err(|error| error.to_string())?;
-        return parse_auth_document(&text).map_err(|error| error.to_string());
+        _ => {}
     }
-    Err("auth document is unavailable".to_string())
-}
-
-fn persist_connector_result(
-    conn: &Connection,
-    result: &ConnectorRunResult,
-) -> rusqlite::Result<()> {
-    let run_id = insert_connector_run(
-        conn,
-        &result.connector_id,
-        &result.status,
-        Some(result.connector_id.as_str()),
-        None,
-        result
-            .redacted_error
-            .as_ref()
-            .map(|error| error.code.as_str()),
-        result
-            .redacted_error
-            .as_ref()
-            .map(|error| error.message.as_str()),
-    )?;
-    for batch in &result.batches {
-        insert_reset_credit_batch(
-            conn,
-            run_id,
-            batch.credit_count,
-            batch.expires_at_utc,
-            &result.connector_id,
-            &batch.confidence,
-        )?;
-    }
-    for window in &result.rate_limit_windows {
-        insert_rate_limit_window(
-            conn,
-            &NewRateLimitWindow {
-                connector_run_id: run_id,
-                window_key: &window.window_key,
-                limit_tokens: window.limit_tokens,
-                used_tokens: window.used_tokens,
-                remaining_tokens: window.remaining_tokens,
-                resets_at_utc: window.resets_at_utc,
-                confidence: &window.confidence,
-            },
-        )?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -415,8 +460,19 @@ mod tests {
             get_dashboard_summary_from_path("combined".to_string(), app_dir.path().to_path_buf())
                 .unwrap();
 
-        assert_eq!(refreshed.metrics[0].value, "321");
-        assert_eq!(reopened.metrics[0].value, "321");
+        let local =
+            get_dashboard_summary_from_path("local".to_string(), app_dir.path().to_path_buf())
+                .unwrap();
+
+        assert_eq!(refreshed.metrics[0].value, "Unavailable");
+        assert_eq!(reopened.metrics[0].value, "Unavailable");
+        assert_eq!(local.metrics[0].value, "321");
+        let account_connector = reopened
+            .connectors
+            .iter()
+            .find(|connector| connector.id == "account-usage")
+            .unwrap();
+        assert_eq!(account_connector.status, "degraded");
         let connector = reopened
             .connectors
             .iter()
@@ -431,12 +487,11 @@ mod tests {
         assert_eq!(rate_limit_windows.status, "degraded");
 
         let conn = open_app_database(app_dir.path()).unwrap();
-        let stored_endpoint: String = conn
+        let stored_error: String = conn
             .query_row(
                 r#"
-                SELECT endpoint_id
-                FROM connector_runs
-                WHERE connector_id = 'undocumented-rate-limits'
+                SELECT redacted_error_code
+                FROM account_refresh_runs
                 ORDER BY id DESC
                 LIMIT 1
                 "#,
@@ -444,7 +499,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(stored_endpoint, "undocumented-rate-limits");
+        assert!(!stored_error.is_empty());
     }
 
     #[test]
@@ -614,5 +669,45 @@ mod tests {
 
         assert!(error.contains("invalid export filename"));
         assert!(!target_dir.path().join("auth.json").exists());
+    }
+
+    #[test]
+    fn diagnostics_export_writes_sanitized_file() {
+        let target_dir = tempdir().unwrap();
+        let diagnostics = SetupDiagnosticsDto {
+            app_data_dir: target_dir.path().display().to_string(),
+            database_path: target_dir
+                .path()
+                .join("tokenstack.sqlite3")
+                .display()
+                .to_string(),
+            auth_home: "C:\\Users\\TokenStack".to_string(),
+            selected_codex_executable: Some("C:\\Program Files\\Codex\\codex.exe".to_string()),
+            codex_launch_mode: Some("listen_stdio_no_mcp".to_string()),
+            first_failing_account_stage: Some("account/usage/read".to_string()),
+            last_successful_account_refresh: Some("2026-07-03T12:00:00Z".to_string()),
+            usage_event_count: 0,
+            usage_total_tokens: 0,
+            source_document_count: 0,
+            local_roots: Vec::new(),
+            latest_import_run: None,
+            connector_runs: vec![ConnectorRunDiagnosticsDto {
+                connector_id: "account-usage".to_string(),
+                status: "failed".to_string(),
+                completed_at_utc: "2026-07-03T12:00:00Z".to_string(),
+                endpoint_id: None,
+                http_status: None,
+                redacted_error_code: Some("protocol_error".to_string()),
+                redacted_error_message: Some("authorization synthetic".to_string()),
+            }],
+        };
+
+        let path = export_diagnostics_to_dir(&diagnostics, target_dir.path()).unwrap();
+        let contents = fs::read_to_string(path).unwrap();
+
+        assert!(contents.contains("\"schemaVersion\": 1"));
+        assert!(contents.contains("codex.exe"));
+        assert!(!contents.contains("authorization synthetic"));
+        assert!(contents.contains("[REDACTED]"));
     }
 }

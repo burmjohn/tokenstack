@@ -1,7 +1,9 @@
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(test)]
 pub struct PublicError {
     pub code: String,
     pub message: String,
@@ -37,6 +39,7 @@ fn looks_like_secret(part: &str) -> bool {
             && trimmed.chars().any(|c| c.is_ascii_uppercase())
 }
 
+#[cfg(test)]
 pub fn public_error(code: &str, message: &str) -> PublicError {
     PublicError {
         code: code.to_string(),

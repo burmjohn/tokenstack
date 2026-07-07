@@ -6,6 +6,8 @@ import {
   type DataMode,
   type SetupDiagnostics,
 } from "../schemas/dashboard";
+import { buildSetupDiagnosticsFilename, buildSetupDiagnosticsJson } from "../../features/exports/diagnostics";
+import { downloadTextFile, type TextDownloadResult } from "../../features/exports/download";
 import { createMockDashboardSummary, createMockSetupDiagnostics } from "./mockData";
 
 type TauriWindow = Window & {
@@ -42,4 +44,23 @@ export async function getSetupDiagnostics(): Promise<SetupDiagnostics> {
 
   const payload = await invoke("get_setup_diagnostics");
   return setupDiagnosticsSchema.parse(payload);
+}
+
+export async function exportSetupDiagnostics(
+  diagnostics: SetupDiagnostics,
+): Promise<TextDownloadResult> {
+  if (!isTauriRuntime()) {
+    return downloadTextFile(
+      buildSetupDiagnosticsFilename(),
+      buildSetupDiagnosticsJson(diagnostics),
+      "application/json;charset=utf-8",
+    );
+  }
+
+  try {
+    const path = await invoke<string>("export_diagnostics");
+    return { status: "saved", path };
+  } catch (error) {
+    return { status: "failed", error: error instanceof Error ? error.message : String(error) };
+  }
 }
