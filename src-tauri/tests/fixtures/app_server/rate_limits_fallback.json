@@ -1,0 +1,14 @@
+{
+  "rateLimits": {
+    "limitId": "codex",
+    "limitName": "Codex fallback",
+    "primary": { "usedPercent": 7.5, "windowDurationMins": 300, "resetsAt": 1783699200 },
+    "secondary": null,
+    "credits": null,
+    "individualLimit": null,
+    "planType": null,
+    "rateLimitReachedType": null
+  },
+  "rateLimitsByLimitId": null,
+  "rateLimitResetCredits": null
+}

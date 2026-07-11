@@ -1,0 +1,13 @@
+{
+  "summary": {
+    "lifetimeTokens": 1234,
+    "peakDailyTokens": 100,
+    "longestRunningTurnSec": null,
+    "currentStreakDays": 0,
+    "longestStreakDays": 3
+  },
+  "dailyUsageBuckets": [
+    { "startDate": "2026-07-09", "tokens": 0 },
+    { "startDate": "2026-07-10", "tokens": 50, "unknownFutureField": "ignored" }
+  ]
+}

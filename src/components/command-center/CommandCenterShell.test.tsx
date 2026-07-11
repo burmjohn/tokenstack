@@ -2,11 +2,27 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DesktopMenuCommand } from "../../features/desktop/commands";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandCenterShell } from "./CommandCenterShell";
 
 const desktopBridge = vi.hoisted(() => ({
   handler: undefined as ((command: DesktopMenuCommand) => void) | undefined,
+}));
+
+const runtimeApi = vi.hoisted(() => ({
+  chooseCodexRuntime: vi.fn(),
+  clearCodexRuntime: vi.fn(),
+  getDashboardSummary: vi.fn(),
+  listCodexRuntimes: vi.fn(),
+  refreshAll: vi.fn(),
+  selectCodexRuntime: vi.fn(),
+  validateCodexRuntime: vi.fn(),
+  exportSetupDiagnostics: vi.fn(),
+}));
+
+vi.mock("../../lib/api/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/api/tauri")>()),
+  ...runtimeApi,
 }));
 
 vi.mock("../../features/desktop/commands", () => ({
@@ -22,6 +38,21 @@ vi.mock("../../features/desktop/contextMenu", () => ({
 
 const originalCreateObjectURL = URL.createObjectURL;
 const originalRevokeObjectURL = URL.revokeObjectURL;
+
+beforeEach(async () => {
+  runtimeApi.chooseCodexRuntime.mockReset().mockResolvedValue({ valid: false, version: null, error: "selection cancelled" });
+  runtimeApi.clearCodexRuntime.mockReset().mockResolvedValue(undefined);
+  const { createMockDashboardSummary } = await import("../../lib/api/mockData");
+  runtimeApi.getDashboardSummary.mockReset().mockImplementation((mode) => Promise.resolve(createMockDashboardSummary(mode)));
+  runtimeApi.listCodexRuntimes.mockReset().mockResolvedValue([]);
+  runtimeApi.selectCodexRuntime.mockReset().mockResolvedValue({ valid: true, version: "codex 1.2.3", error: null });
+  runtimeApi.validateCodexRuntime.mockReset().mockResolvedValue({ valid: true, version: "codex 1.2.3", error: null });
+  runtimeApi.exportSetupDiagnostics.mockReset().mockResolvedValue({ status: "saved", path: "C:\\TokenStack\\diagnostics\\report.json" });
+  runtimeApi.refreshAll.mockReset().mockImplementation(async (mode) => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    return createMockDashboardSummary(mode);
+  });
+});
 
 afterEach(() => {
   desktopBridge.handler = undefined;
@@ -41,6 +72,89 @@ function renderShell() {
 }
 
 describe("CommandCenterShell", () => {
+  it("renders account and local history together in combined mode", async () => {
+    const { createMockDashboardSummary } = await import("../../lib/api/mockData");
+    const summary = createMockDashboardSummary("combined");
+    summary.accountMetrics = [
+      { ...summary.metrics[0], key: "account-lifetime", label: "Account lifetime", value: "999" },
+      { ...summary.metrics[1], key: "account-today", label: "Account today", value: "30" },
+      { ...summary.metrics[2], key: "account-month", label: "Account this month", value: "400" },
+    ];
+    summary.localMetrics = [
+      { ...summary.metrics[0], key: "local-lifetime", label: "Local lifetime", value: "175" },
+      { ...summary.metrics[1], key: "local-today", label: "Local today", value: "100" },
+      { ...summary.metrics[2], key: "local-month", label: "Local this month", value: "150" },
+      { ...summary.metrics[3], key: "local-peak", label: "Local peak session", value: "100" },
+    ];
+    runtimeApi.getDashboardSummary.mockResolvedValue(summary);
+
+    renderShell();
+
+    expect(await screen.findByRole("heading", { name: "Account usage" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Local history" })).toBeInTheDocument();
+    expect(screen.getByText("999")).toBeInTheDocument();
+    expect(screen.getByText("175")).toBeInTheDocument();
+    expect(screen.getByText("Local token history from this device; not account-wide usage.")).toBeInTheDocument();
+  });
+
+  it("keeps local history visible when account usage is unavailable", async () => {
+    const { createMockDashboardSummary } = await import("../../lib/api/mockData");
+    const summary = createMockDashboardSummary("combined");
+    summary.accountMetrics = [];
+    summary.localMetrics = [{ ...summary.metrics[0], key: "local-lifetime", label: "Local lifetime", value: "175" }];
+    const account = summary.connectors.find((connector) => connector.id === "account-usage");
+    if (account) Object.assign(account, { status: "degraded", detail: "Account usage unavailable" });
+    else summary.connectors.push({ ...summary.connectors[0], id: "account-usage", name: "Account usage", detail: "Account usage unavailable", status: "degraded" });
+    runtimeApi.getDashboardSummary.mockResolvedValue(summary);
+
+    renderShell();
+
+    expect(await screen.findByRole("heading", { name: "Account usage unavailable" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Local history" })).toBeInTheDocument();
+    expect(screen.getByText("175")).toBeInTheDocument();
+  });
+
+  it("marks last-good account usage stale without degrading local history", async () => {
+    const { createMockDashboardSummary } = await import("../../lib/api/mockData");
+    const summary = createMockDashboardSummary("combined");
+    summary.accountMetrics = [{ ...summary.metrics[0], key: "account-lifetime", label: "Account lifetime", value: "999" }];
+    summary.localMetrics = [{ ...summary.metrics[0], key: "local-lifetime", label: "Local lifetime", value: "175" }];
+    summary.connectors.push({ ...summary.connectors[0], id: "account-usage", name: "Account usage", detail: "Last-good account snapshot", status: "degraded", freshness: "stale", ageSeconds: 60 });
+    runtimeApi.getDashboardSummary.mockResolvedValue(summary);
+
+    renderShell();
+
+    expect(await screen.findByText("Stale account snapshot")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Local history" })).toBeInTheDocument();
+  });
+
+  it("shows no local history instead of zero metrics when no local evidence exists", async () => {
+    const { createMockDashboardSummary } = await import("../../lib/api/mockData");
+    const summary = createMockDashboardSummary("combined");
+    summary.localMetrics = [];
+    runtimeApi.getDashboardSummary.mockResolvedValue(summary);
+
+    renderShell();
+
+    expect(await screen.findByRole("heading", { name: "Local history unavailable" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Local history metrics")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["local", false, true],
+    ["remote", true, false],
+  ] as const)("renders only requested source family in %s mode", async (mode, accountVisible, localVisible) => {
+    const { createMockDashboardSummary } = await import("../../lib/api/mockData");
+    const summary = createMockDashboardSummary(mode);
+    summary.accountMetrics = [{ ...summary.metrics[0], key: "account-lifetime", label: "Account lifetime" }];
+    runtimeApi.getDashboardSummary.mockResolvedValue(summary);
+    renderShell();
+
+    await waitFor(() => {
+      expect(Boolean(screen.queryByRole("heading", { name: "Account usage" }))).toBe(accountVisible);
+      expect(Boolean(screen.queryByRole("heading", { name: /Local history/ }))).toBe(localVisible);
+    });
+  });
   it("renders required Command Center concepts", async () => {
     renderShell();
 
@@ -99,26 +213,125 @@ describe("CommandCenterShell", () => {
     expect(await screen.findByText("Diagnostics")).toBeInTheDocument();
     expect(screen.getByText("Local Codex folders")).toBeInTheDocument();
     expect(screen.getByText("No import run recorded")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Codex runtime" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Choose runtime" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Clear selection" })).toBeEnabled();
+    expect(screen.getByText("No automatic Codex runtimes found")).toBeInTheDocument();
+  });
+
+  it("chooses and validates a runtime before reporting it connected", async () => {
+    const user = userEvent.setup();
+    runtimeApi.chooseCodexRuntime.mockResolvedValue({ valid: true, version: "codex 1.2.3", error: null });
+    renderShell();
+    await user.click(await screen.findByRole("button", { name: "Setup" }));
+
+    await user.click(screen.getByRole("button", { name: "Choose runtime" }));
+
+    expect(await screen.findByText("Connected — codex 1.2.3")).toBeInTheDocument();
+    expect(runtimeApi.selectCodexRuntime).not.toHaveBeenCalled();
+    expect(runtimeApi.refreshAll).toHaveBeenCalledWith("combined");
+  });
+
+  it("reports invalid picker selection without refreshing account data", async () => {
+    const user = userEvent.setup();
+    runtimeApi.chooseCodexRuntime.mockResolvedValue({ valid: false, version: null, error: "unsupported protocol" });
+    renderShell();
+    await user.click(await screen.findByRole("button", { name: "Setup" }));
+
+    await user.click(screen.getByRole("button", { name: "Choose runtime" }));
+
+    expect(await screen.findByText("Unsupported Codex CLI")).toBeInTheDocument();
+    expect(runtimeApi.refreshAll).not.toHaveBeenCalled();
+  });
+
+  it("uses an automatic candidate, clears selection, and tests connection", async () => {
+    const user = userEvent.setup();
+    runtimeApi.listCodexRuntimes.mockResolvedValue([{
+      displayPath: "C:\\Codex\\codex.exe",
+      source: "path",
+      exists: true,
+      executable: true,
+      version: "codex 1.2.3",
+      validationError: null,
+      configured: false,
+      selected: true,
+    }]);
+    renderShell();
+    await user.click(await screen.findByRole("button", { name: "Setup" }));
+
+    expect(screen.getByText("selected")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Use PATH runtime C:\\Codex\\codex.exe" }));
+    expect(runtimeApi.selectCodexRuntime).toHaveBeenCalledWith({ displayPath: "C:\\Codex\\codex.exe" });
+    expect(await screen.findByText("Connected — codex 1.2.3")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(await screen.findByText("Selection cleared. Automatic discovery is active.")).toBeInTheDocument();
+    expect(runtimeApi.clearCodexRuntime).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Test connection" }));
+    expect(await screen.findByText("Connected — codex 1.2.3")).toBeInTheDocument();
+    expect(runtimeApi.validateCodexRuntime).toHaveBeenCalledOnce();
+  });
+
+  it("renders backend-selected npm wrappers as configured", async () => {
+    const user = userEvent.setup();
+    runtimeApi.listCodexRuntimes.mockResolvedValue([{
+      displayPath: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd",
+      source: "npm",
+      exists: true,
+      executable: true,
+      version: "codex 1.2.3",
+      validationError: null,
+      configured: true,
+      selected: true,
+    }]);
+    renderShell();
+    await user.click(await screen.findByRole("button", { name: "Setup" }));
+
+    expect(screen.getByText("selected")).toBeInTheDocument();
+    expect(screen.getByText("configured")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["missing executable", "Codex runtime not found"],
+    ["access denied", "Access denied"],
+    ["user is logged out", "Codex is logged out"],
+    ["initialize timeout", "App-server initialize timed out"],
+    ["method partial failure: rate limits", "Connected with method partial failure — method partial failure: rate limits"],
+  ])("stages runtime failure %s as an accessible alert", async (error, expected) => {
+    const user = userEvent.setup();
+    runtimeApi.chooseCodexRuntime.mockResolvedValue({ valid: false, version: null, error });
+    renderShell();
+    await user.click(await screen.findByRole("button", { name: "Setup" }));
+    await user.click(screen.getByRole("button", { name: "Choose runtime" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(expected);
   });
 
   it("downloads setup diagnostics as JSON", async () => {
     const user = userEvent.setup();
-    const download = installDownloadMocks();
+    runtimeApi.exportSetupDiagnostics.mockResolvedValueOnce({ status: "downloaded" });
     renderShell();
     await screen.findByText("Daily token usage");
 
     await user.click(screen.getByRole("button", { name: "Setup" }));
     await user.click(await screen.findByRole("button", { name: "Export diagnostics" }));
 
-    await waitFor(() => expect(download.anchorClick).toHaveBeenCalledTimes(1));
-    expect(download.getAnchor()?.download).toMatch(/^tokenstack-diagnostics-\d{4}-\d{2}-\d{2}\.json$/);
+    expect(await screen.findByText("Downloaded diagnostics JSON")).toBeInTheDocument();
+  });
 
-    const blob = download.createObjectURL.mock.calls[0]?.[0];
-    if (!blob) {
-      throw new Error("Diagnostics export did not create a blob.");
-    }
-    expect(blob.type).toBe("application/json;charset=utf-8");
-    await expect(readBlobText(blob)).resolves.toContain('"localRoots"');
+  it("shows the exact installed-app diagnostics path and an actionable failure", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await user.click(await screen.findByRole("button", { name: "Setup" }));
+    await user.click(await screen.findByRole("button", { name: "Export diagnostics" }));
+    expect(await screen.findByText("Saved to C:\\TokenStack\\diagnostics\\report.json")).toBeInTheDocument();
+    expect(runtimeApi.exportSetupDiagnostics).toHaveBeenCalledWith(expect.any(Object), "combined");
+
+    runtimeApi.exportSetupDiagnostics.mockResolvedValueOnce({ status: "failed", error: "access denied writing diagnostics directory" });
+    await user.click(screen.getByRole("button", { name: "Export diagnostics" }));
+    expect(await screen.findByText("Export failed: access denied writing diagnostics directory")).toBeInTheDocument();
   });
 
   it("toggles theme and runs refresh without duplicate controls", async () => {
@@ -182,7 +395,7 @@ describe("CommandCenterShell", () => {
     expect(await screen.findByRole("region", { name: "Badge export panel" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Usage badge layout" }));
-    expect(screen.getByText("Monthly output")).toBeInTheDocument();
+    expect(screen.getByText("Local monthly output")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Download PNG for Usage badge" }));
 
     await waitFor(() => expect(download.anchorClick).toHaveBeenCalledTimes(1));

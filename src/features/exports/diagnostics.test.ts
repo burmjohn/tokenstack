@@ -43,4 +43,22 @@ describe("diagnostics export helpers", () => {
       "tokenstack-diagnostics-2026-07-03.json",
     );
   });
+
+  it("recursively removes sensitive keys and secret-shaped values", () => {
+    const diagnostics = createMockSetupDiagnostics() as unknown as Record<string, unknown>;
+    diagnostics.prompt = "private prompt body";
+    const authorization = ["Authorization:", "Bearer", "eyJhbGciOiJIUzI1NiJ9.private.signature"].join(" ");
+    diagnostics.nested = {
+      accountLabel: "person@example.com",
+      redactedErrorMessage: authorization,
+      splitBearer: "Bearer\nabc.def.ghi",
+      safe: "initialize timed out",
+      ordinary: ["sk", "syntheticValue123456789"].join("-") + " Authorization opaque-value cookie=session-value",
+      provider: ["gh", "p_syntheticValue123456789"].join("") + " " + ["xox", "b-syntheticValue123456789"].join(""),
+    };
+    const json = buildSetupDiagnosticsJson(diagnostics as never);
+    expect(json).not.toMatch(/private prompt|person@example|eyJhbGci|abc\.def\.ghi|syntheticValue|opaque-value|session-value/);
+    expect(json).toContain("[REDACTED]");
+    expect(json).toContain("initialize timed out");
+  });
 });

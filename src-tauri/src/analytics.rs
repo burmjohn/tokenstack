@@ -45,6 +45,8 @@ pub struct DashboardSummaryDto {
     pub refresh_status: String,
     pub timezone: String,
     pub metrics: Vec<MetricDto>,
+    pub account_metrics: Vec<MetricDto>,
+    pub local_metrics: Vec<MetricDto>,
     pub heatmap: Vec<HeatmapDayDto>,
     pub reset_credits: Vec<ResetCreditDto>,
     pub coverage: Vec<CoverageDto>,
@@ -75,6 +77,8 @@ pub struct ConnectorDto {
     pub read_only: bool,
     pub safety_class: String,
     pub last_run_at_utc: String,
+    pub freshness: String,
+    pub age_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +165,11 @@ pub fn build_dashboard_summary(
 ) -> rusqlite::Result<DashboardSummaryDto> {
     let data_mode = DataMode::parse(data_mode);
     let generated_at_utc = Utc::now().to_rfc3339();
+    let local_event_count: i64 = if data_mode.includes_local() {
+        conn.query_row("SELECT COUNT(*) FROM usage_events", [], |row| row.get(0))?
+    } else {
+        0
+    };
     let (local_lifetime, local_today, local_month, peak) = if data_mode.includes_local() {
         let local_lifetime: i64 = conn.query_row(
             "SELECT COALESCE(SUM(total_tokens), 0) FROM usage_events",
@@ -287,6 +296,72 @@ pub fn build_dashboard_summary(
     };
     let rate_limit_coverage =
         rate_limit_coverage(&rate_limit_windows, latest_rate_limit_run.as_ref());
+    let account_metrics = account_usage
+        .as_ref()
+        .filter(|_| data_mode.includes_remote())
+        .map(|usage| {
+            vec![
+                metric_value(
+                    "account-lifetime",
+                    "Account lifetime",
+                    usage
+                        .lifetime_tokens
+                        .map(compact_tokens)
+                        .unwrap_or_else(|| "Unavailable".to_string()),
+                    "Codex account snapshot",
+                    &account_coverage,
+                ),
+                metric_value(
+                    "account-today",
+                    "Account today",
+                    compact_tokens(usage.today_tokens),
+                    "Account daily bucket",
+                    &account_coverage,
+                ),
+                metric_value(
+                    "account-month",
+                    "Account this month",
+                    compact_tokens(usage.month_tokens),
+                    "Account month-to-date",
+                    &account_coverage,
+                ),
+            ]
+        })
+        .unwrap_or_default();
+    let local_metrics = if data_mode.includes_local() && local_event_count > 0 {
+        vec![
+            metric(
+                "local-lifetime",
+                "Local lifetime",
+                local_lifetime,
+                "Imported local history",
+                &local_coverage,
+            ),
+            metric(
+                "local-today",
+                "Local today",
+                local_today,
+                "Local history day bucket",
+                &local_coverage,
+            ),
+            metric(
+                "local-month",
+                "Local this month",
+                local_month,
+                "Local history month-to-date",
+                &local_coverage,
+            ),
+            metric(
+                "local-peak",
+                "Local peak session",
+                peak,
+                "Largest imported event",
+                &local_coverage,
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
 
     Ok(DashboardSummaryDto {
         generated_at_utc,
@@ -352,6 +427,8 @@ pub fn build_dashboard_summary(
                 coverage: reset_coverage.clone(),
             },
         ],
+        account_metrics,
+        local_metrics,
         heatmap: if data_mode.includes_local() {
             heatmap(conn)?
         } else {
@@ -766,19 +843,19 @@ fn load_account_usage(conn: &Connection) -> rusqlite::Result<Option<LoadedAccoun
     let Some(run_id) = latest_account_run_id_with_usage(conn)? else {
         return Ok(None);
     };
-    let (lifetime_tokens, captured_at_utc, degraded): (Option<i64>, String, bool) = conn
-        .query_row(
-            r#"
-        SELECT u.lifetime_tokens, r.completed_at_utc, r.status != 'connected'
+    let (lifetime_tokens, captured_at_utc): (Option<i64>, String) = conn.query_row(
+        r#"
+        SELECT u.lifetime_tokens, r.completed_at_utc
         FROM account_usage_snapshots u
         JOIN account_refresh_runs r ON r.id = u.refresh_run_id
         WHERE u.refresh_run_id = ?1
         ORDER BY u.id DESC
         LIMIT 1
         "#,
-            [run_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, bool>(2)?)),
-        )?;
+        [run_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let degraded = facet_freshness(conn, "account/usage/read", Some(run_id))?.stale;
     let mut stmt = conn.prepare(
         r#"
         SELECT usage_date, total_tokens
@@ -819,17 +896,21 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
         0
     };
     let local_run = latest_import_run(conn)?;
-    let account_run = if data_mode.includes_remote() {
-        latest_account_run(conn)?
-    } else {
-        None
-    };
-    let has_reset_snapshot =
-        data_mode.includes_remote() && latest_account_run_id_with_reset_credits(conn)?.is_some();
-    let has_rate_snapshot =
-        data_mode.includes_remote() && latest_account_run_id_with_rate_limits(conn)?.is_some();
-    let has_usage_snapshot =
-        data_mode.includes_remote() && latest_account_run_id_with_usage(conn)?.is_some();
+    let usage_freshness = facet_freshness(
+        conn,
+        "account/usage/read",
+        latest_account_run_id_with_usage(conn)?,
+    )?;
+    let reset_freshness = facet_freshness(
+        conn,
+        "account/rateLimits/read",
+        latest_account_run_id_with_reset_credits(conn)?,
+    )?;
+    let rate_freshness = facet_freshness(
+        conn,
+        "account/rateLimits/read",
+        latest_account_run_id_with_rate_limits(conn)?,
+    )?;
 
     Ok(vec![
         ConnectorDto {
@@ -842,58 +923,196 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
             last_run_at_utc: local_run
                 .map(|run| run.completed_at_utc)
                 .unwrap_or_else(no_evidence_timestamp),
+            freshness: if local_count > 0 {
+                "fresh"
+            } else {
+                "unavailable"
+            }
+            .to_string(),
+            age_seconds: None,
         },
         ConnectorDto {
             id: "account-usage".to_string(),
             name: "Codex account usage".to_string(),
-            detail: account_connector_detail(
-                account_run.as_ref(),
-                has_usage_snapshot,
+            detail: facet_connector_detail(
+                &usage_freshness,
                 "Latest account usage snapshot checked",
                 "No account usage snapshot yet",
             ),
-            status: account_connector_status(account_run.as_ref(), has_usage_snapshot),
+            status: account_connector_status_for_facet(&usage_freshness),
             read_only: true,
             safety_class: "Snapshot".to_string(),
-            last_run_at_utc: account_run
-                .as_ref()
-                .map(connector_run_evidence_at)
+            last_run_at_utc: usage_freshness
+                .latest_attempt_at
+                .clone()
                 .unwrap_or_else(no_evidence_timestamp),
+            freshness: usage_freshness.label().to_string(),
+            age_seconds: usage_freshness.age_seconds,
         },
         ConnectorDto {
             id: "known-reset-credit".to_string(),
             name: "Reset credits".to_string(),
-            detail: account_connector_detail(
-                account_run.as_ref(),
-                has_reset_snapshot,
+            detail: facet_connector_detail(
+                &reset_freshness,
                 "Latest reset-credit snapshot checked",
                 "No reset-credit snapshot yet",
             ),
-            status: account_connector_status(account_run.as_ref(), has_reset_snapshot),
+            status: account_connector_status_for_facet(&reset_freshness),
             read_only: true,
             safety_class: "Snapshot".to_string(),
-            last_run_at_utc: account_run
-                .as_ref()
-                .map(connector_run_evidence_at)
+            last_run_at_utc: reset_freshness
+                .latest_attempt_at
+                .clone()
                 .unwrap_or_else(no_evidence_timestamp),
+            freshness: reset_freshness.label().to_string(),
+            age_seconds: reset_freshness.age_seconds,
         },
         ConnectorDto {
             id: "rate-limit-windows".to_string(),
             name: "Rate-limit windows".to_string(),
-            detail: account_connector_detail(
-                account_run.as_ref(),
-                has_rate_snapshot,
+            detail: facet_connector_detail(
+                &rate_freshness,
                 "Latest rate-limit window snapshot checked",
                 "No rate-limit window snapshot yet",
             ),
-            status: account_connector_status(account_run.as_ref(), has_rate_snapshot),
+            status: account_connector_status_for_facet(&rate_freshness),
             read_only: true,
             safety_class: "Snapshot".to_string(),
-            last_run_at_utc: account_run
-                .map(|run| run.completed_at_utc.unwrap_or(run.started_at_utc))
+            last_run_at_utc: rate_freshness
+                .latest_attempt_at
+                .clone()
                 .unwrap_or_else(no_evidence_timestamp),
+            freshness: rate_freshness.label().to_string(),
+            age_seconds: rate_freshness.age_seconds,
         },
     ])
+}
+
+struct FacetFreshness {
+    has_last_good: bool,
+    stale: bool,
+    age_seconds: Option<i64>,
+    latest_attempt_at: Option<String>,
+    latest_error: Option<String>,
+    has_attempt: bool,
+}
+
+impl FacetFreshness {
+    fn label(&self) -> &'static str {
+        if !self.has_last_good {
+            "unavailable"
+        } else if self.stale {
+            "stale"
+        } else {
+            "fresh"
+        }
+    }
+}
+
+fn facet_freshness(
+    conn: &Connection,
+    method: &str,
+    last_good_run_id: Option<i64>,
+) -> rusqlite::Result<FacetFreshness> {
+    let latest_attempt: Option<(i64, String, Option<String>, String)> = conn
+        .query_row(
+            r#"
+            SELECT refresh_run_id, status, redacted_error, captured_at_utc
+            FROM account_method_attempts
+            WHERE method = ?1 OR method NOT LIKE 'account/%'
+            ORDER BY refresh_run_id DESC, id DESC
+            LIMIT 1
+            "#,
+            [method],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let captured_at = last_good_run_id
+        .map(|run_id| {
+            conn.query_row(
+                "SELECT completed_at_utc FROM account_refresh_runs WHERE id = ?1",
+                [run_id],
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .transpose()?;
+    let age_seconds = captured_at.as_deref().and_then(|captured_at| {
+        DateTime::parse_from_rfc3339(captured_at)
+            .ok()
+            .map(|captured| {
+                (Utc::now() - captured.with_timezone(&Utc))
+                    .num_seconds()
+                    .max(0)
+            })
+    });
+    let stale = match (last_good_run_id, latest_attempt.as_ref()) {
+        (Some(good), Some((attempt, status, _, _))) => *attempt > good || status != "ok",
+        _ => false,
+    };
+    Ok(FacetFreshness {
+        has_last_good: last_good_run_id.is_some(),
+        stale,
+        age_seconds,
+        latest_attempt_at: latest_attempt
+            .as_ref()
+            .map(|attempt| attempt.3.clone())
+            .or_else(|| captured_at.clone()),
+        latest_error: latest_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.2.clone()),
+        has_attempt: latest_attempt.is_some(),
+    })
+}
+
+fn account_connector_status_for_facet(freshness: &FacetFreshness) -> String {
+    if !freshness.has_last_good && !freshness.has_attempt {
+        "unavailable"
+    } else if !freshness.has_last_good || freshness.stale {
+        "degraded"
+    } else {
+        "connected"
+    }
+    .to_string()
+}
+
+fn facet_connector_detail(
+    freshness: &FacetFreshness,
+    success_detail: &str,
+    unavailable_detail: &str,
+) -> String {
+    if !freshness.has_attempt {
+        if freshness.has_last_good {
+            let legacy_label = success_detail
+                .strip_prefix("Latest ")
+                .unwrap_or(success_detail)
+                .strip_suffix(" checked")
+                .unwrap_or(success_detail);
+            return format!("Stored {legacy_label} using legacy refresh metadata.");
+        }
+        return unavailable_detail.to_string();
+    }
+    if freshness.has_last_good && !freshness.stale {
+        return success_detail.to_string();
+    }
+    if let Some(error) = &freshness.latest_error {
+        let public_error = if error.contains("Codex CLI was not found") {
+            "Codex CLI not found; configure the executable path or TOKENSTACK_CODEX_BIN."
+                .to_string()
+        } else {
+            error.clone()
+        };
+        if freshness.has_last_good {
+            return format!(
+                "Using last-good account snapshot; latest attempt failed: {public_error}"
+            );
+        }
+        return public_error;
+    }
+    if freshness.has_last_good {
+        "Using last-good account snapshot; latest attempt did not succeed.".to_string()
+    } else {
+        "Account snapshot refresh needs attention.".to_string()
+    }
 }
 
 struct ImportRunRow {
@@ -964,55 +1183,16 @@ fn connector_status(status: &str) -> String {
     .to_string()
 }
 
-fn account_connector_status(run: Option<&ConnectorRunRow>, has_snapshot: bool) -> String {
-    match run {
-        Some(run) if connector_status(&run.status) == "connected" && has_snapshot => "connected",
-        Some(_) if has_snapshot => "degraded",
-        Some(_) => "degraded",
-        None => "unavailable",
-    }
-    .to_string()
-}
-
-fn account_connector_detail(
-    run: Option<&ConnectorRunRow>,
-    has_snapshot: bool,
-    success_detail: &str,
-    unavailable_detail: &str,
-) -> String {
-    match run {
-        None => unavailable_detail.to_string(),
-        Some(run) if connector_status(&run.status) == "connected" && has_snapshot => {
-            success_detail.to_string()
-        }
-        Some(run) if run.redacted_error_code.as_deref() == Some("missing_cli") => {
-            "Codex CLI not found; configure the executable path or TOKENSTACK_CODEX_BIN."
-                .to_string()
-        }
-        Some(run) if run.redacted_error_code.as_deref() == Some("logged_out") => {
-            "Codex login required before account snapshots can refresh.".to_string()
-        }
-        Some(run) if has_snapshot => {
-            format!(
-                "Using last-good account snapshot; latest failure at {}",
-                connector_run_evidence_at(run)
-            )
-        }
-        Some(_) => "Account snapshot refresh needs attention.".to_string(),
-    }
-}
-
 struct ConnectorRunRow {
     started_at_utc: String,
     completed_at_utc: Option<String>,
     status: String,
-    redacted_error_code: Option<String>,
 }
 
 fn latest_account_run(conn: &Connection) -> rusqlite::Result<Option<ConnectorRunRow>> {
     conn.query_row(
         r#"
-        SELECT started_at_utc, completed_at_utc, status, redacted_error_code
+        SELECT started_at_utc, completed_at_utc, status
         FROM account_refresh_runs
         ORDER BY id DESC
         LIMIT 1
@@ -1023,7 +1203,6 @@ fn latest_account_run(conn: &Connection) -> rusqlite::Result<Option<ConnectorRun
                 started_at_utc: row.get(0)?,
                 completed_at_utc: row.get(1)?,
                 status: row.get(2)?,
-                redacted_error_code: row.get(3)?,
             })
         },
     )
@@ -1269,6 +1448,7 @@ mod tests {
             status,
             launch: AccountLaunchDiagnostics {
                 selected_executable: "/usr/bin/codex".to_string(),
+                argv_prefix: Vec::new(),
                 mode: CodexLaunchMode::ListenStdioNoMcp,
                 candidates: vec!["/usr/bin/codex".to_string()],
             },
@@ -1288,6 +1468,10 @@ mod tests {
                 redacted_error_message: String::new(),
                 stderr_tail: String::new(),
                 used_last_good_snapshot: false,
+                schema_fingerprint: crate::codex_app_server::APP_SERVER_SCHEMA_FINGERPRINT
+                    .to_string(),
+                exit_code: None,
+                child_terminated: true,
             },
             account: AccountIdentitySnapshot {
                 account_label: Some("t***@example.*".to_string()),
@@ -1301,10 +1485,12 @@ mod tests {
                     output_tokens: 20,
                     total_tokens: 30,
                 }],
+                daily_buckets_status: crate::codex_app_server::OptionalCollectionStatus::Present,
             },
             reset_credits: AccountResetCreditsSnapshot {
                 available_count: reset_credits,
                 expires_at_utc: Some("2026-07-28T18:14:00Z".to_string()),
+                credits: None,
             },
             rate_limits: rate_used_percent
                 .map(|used_percent| {
@@ -1312,7 +1498,7 @@ mod tests {
                         bucket_id: "codex".to_string(),
                         display_name: "Codex".to_string(),
                         windows: vec![AccountRateLimitWindow {
-                            window_duration_mins: 300,
+                            window_duration_mins: Some(300),
                             window_label: "5-hour".to_string(),
                             used_percent,
                             remaining_percent: 100.0 - used_percent,
@@ -1321,11 +1507,34 @@ mod tests {
                     }]
                 })
                 .unwrap_or_default(),
-            methods: vec![AccountMethodSnapshot {
-                method: "account/read".to_string(),
-                status: MethodStatus::Ok,
-                redacted_error: None,
-            }],
+            methods: vec![
+                AccountMethodSnapshot {
+                    method: "account/read".to_string(),
+                    status: MethodStatus::Ok,
+                    redacted_error: None,
+                },
+                AccountMethodSnapshot {
+                    method: "account/usage/read".to_string(),
+                    status: if lifetime_tokens.is_some() {
+                        MethodStatus::Ok
+                    } else {
+                        MethodStatus::Failed
+                    },
+                    redacted_error: lifetime_tokens
+                        .is_none()
+                        .then(|| "usage unavailable".to_string()),
+                },
+                AccountMethodSnapshot {
+                    method: "account/rateLimits/read".to_string(),
+                    status: if reset_credits.is_some() || rate_used_percent.is_some() {
+                        MethodStatus::Ok
+                    } else {
+                        MethodStatus::Failed
+                    },
+                    redacted_error: (reset_credits.is_none() && rate_used_percent.is_none())
+                        .then(|| "rate limits unavailable".to_string()),
+                },
+            ],
         };
         crate::db::insert_account_snapshot(conn, &snapshot).unwrap();
     }
@@ -1377,6 +1586,7 @@ mod tests {
         let conn = open_memory().unwrap();
         let summary = build_dashboard_summary(&conn, "local").unwrap();
         assert_eq!(summary.metrics[0].value, "0");
+        assert!(summary.local_metrics.is_empty());
         assert_eq!(summary.timezone, "America/New_York");
     }
 
@@ -1389,6 +1599,7 @@ mod tests {
                 files_seen: 0,
                 events_seen: 0,
                 events_imported: 0,
+                warning_count: 0,
                 warnings: Vec::new(),
             },
         )
@@ -1432,6 +1643,11 @@ mod tests {
                 kind: AccountConnectorErrorKind::MissingCli,
                 stage: "resolve_codex".to_string(),
                 public_message: "Codex CLI was not found".to_string(),
+                exit_code: None,
+                timed_out: false,
+                child_terminated: false,
+                launch: AccountLaunchDiagnostics::validation(String::new(), Vec::new()),
+                failure_class: crate::codex_app_server::AccountConnectorFailureClass::Transport,
             },
         )
         .unwrap();
@@ -1447,6 +1663,40 @@ mod tests {
         assert_eq!(lifetime.label, "Local history tokens");
         assert!(lifetime.delta.contains("Account unavailable"));
         assert_ne!(lifetime.status, "warning");
+        assert!(summary.account_metrics.is_empty());
+        assert_eq!(summary.local_metrics[0].value, "175");
+        assert_eq!(summary.local_metrics[0].label, "Local lifetime");
+    }
+
+    #[test]
+    fn combined_mode_keeps_account_and_local_usage_as_separate_metric_families() {
+        let conn = seeded_conn();
+        insert_account_fixture(
+            &conn,
+            Some(999),
+            Some(0),
+            Some(25.0),
+            AccountRefreshStatus::Connected,
+        );
+
+        let summary = build_dashboard_summary(&conn, "combined").unwrap();
+
+        assert_eq!(summary.account_metrics.len(), 3);
+        assert_eq!(summary.local_metrics.len(), 4);
+        assert_eq!(summary.account_metrics[0].label, "Account lifetime");
+        assert_eq!(summary.account_metrics[0].value, "999");
+        assert_eq!(summary.local_metrics[0].label, "Local lifetime");
+        assert_eq!(summary.local_metrics[0].value, "175");
+        assert_eq!(summary.local_metrics[3].label, "Local peak session");
+        assert_eq!(
+            summary
+                .metrics
+                .iter()
+                .find(|metric| metric.key == "reset")
+                .unwrap()
+                .value,
+            "0"
+        );
     }
 
     #[test]
@@ -1494,6 +1744,11 @@ mod tests {
                 kind: AccountConnectorErrorKind::MissingCli,
                 stage: "resolve_codex".to_string(),
                 public_message: "Codex CLI was not found".to_string(),
+                exit_code: None,
+                timed_out: false,
+                child_terminated: false,
+                launch: AccountLaunchDiagnostics::validation(String::new(), Vec::new()),
+                failure_class: crate::codex_app_server::AccountConnectorFailureClass::Transport,
             },
         )
         .unwrap();
@@ -1581,6 +1836,11 @@ mod tests {
                 kind: AccountConnectorErrorKind::Timeout,
                 stage: "initialize".to_string(),
                 public_message: "initialize timed out".to_string(),
+                exit_code: None,
+                timed_out: true,
+                child_terminated: true,
+                launch: AccountLaunchDiagnostics::validation(String::new(), Vec::new()),
+                failure_class: crate::codex_app_server::AccountConnectorFailureClass::Transport,
             },
         )
         .unwrap();
@@ -1609,5 +1869,139 @@ mod tests {
         assert_eq!(summary.rate_limit_windows[0].remaining, "75%");
         assert_eq!(rate_limit_coverage.coverage_percent, 35);
         assert_eq!(rate_limit_coverage.confidence, "low");
+    }
+
+    #[test]
+    fn partial_failure_degrades_only_failed_facet_and_recovery_clears_stale_state() {
+        let conn = open_memory().unwrap();
+        insert_account_fixture(
+            &conn,
+            Some(100),
+            Some(4),
+            Some(25.0),
+            AccountRefreshStatus::Connected,
+        );
+        insert_account_fixture(&conn, Some(120), None, None, AccountRefreshStatus::Degraded);
+
+        let partial = build_dashboard_summary(&conn, "remote").unwrap();
+        let usage = partial
+            .connectors
+            .iter()
+            .find(|item| item.id == "account-usage")
+            .unwrap();
+        let credits = partial
+            .connectors
+            .iter()
+            .find(|item| item.id == "known-reset-credit")
+            .unwrap();
+        assert_eq!(usage.status, "connected");
+        assert_eq!(usage.freshness, "fresh");
+        assert_eq!(usage.detail, "Latest account usage snapshot checked");
+        assert_eq!(credits.status, "degraded");
+        assert_eq!(credits.freshness, "stale");
+        assert!(credits.detail.contains("rate limits unavailable"));
+        assert_ne!(usage.last_run_at_utc, "");
+        assert_ne!(credits.last_run_at_utc, "");
+        assert!(credits.age_seconds.is_some());
+        assert_eq!(
+            partial
+                .metrics
+                .iter()
+                .find(|item| item.key == "reset")
+                .unwrap()
+                .value,
+            "4"
+        );
+
+        insert_account_fixture(
+            &conn,
+            Some(130),
+            Some(0),
+            Some(5.0),
+            AccountRefreshStatus::Connected,
+        );
+        let recovered = build_dashboard_summary(&conn, "remote").unwrap();
+        let credits = recovered
+            .connectors
+            .iter()
+            .find(|item| item.id == "known-reset-credit")
+            .unwrap();
+        assert_eq!(credits.status, "connected");
+        assert_eq!(credits.freshness, "fresh");
+        assert_eq!(
+            recovered
+                .metrics
+                .iter()
+                .find(|item| item.key == "reset")
+                .unwrap()
+                .value,
+            "0"
+        );
+    }
+
+    #[test]
+    fn unrelated_newer_account_attempt_does_not_stale_usage_facet() {
+        let conn = open_memory().unwrap();
+        insert_account_fixture(
+            &conn,
+            Some(100),
+            Some(4),
+            Some(25.0),
+            AccountRefreshStatus::Connected,
+        );
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO account_refresh_runs (started_at_utc, completed_at_utc, status) VALUES (?1, ?1, 'degraded')",
+            [&now],
+        )
+        .unwrap();
+        let run_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO account_method_attempts (refresh_run_id, method, status, captured_at_utc) VALUES (?1, 'account/read', 'failed', ?2)",
+            rusqlite::params![run_id, now],
+        )
+        .unwrap();
+
+        let summary = build_dashboard_summary(&conn, "remote").unwrap();
+        let usage = summary
+            .connectors
+            .iter()
+            .find(|item| item.id == "account-usage")
+            .unwrap();
+        assert_eq!(usage.freshness, "fresh");
+        assert_eq!(usage.status, "connected");
+    }
+
+    #[test]
+    fn historical_snapshot_without_method_attempt_remains_connected_with_legacy_provenance() {
+        let conn = open_memory().unwrap();
+        insert_account_fixture(
+            &conn,
+            Some(100),
+            Some(4),
+            Some(25.0),
+            AccountRefreshStatus::Connected,
+        );
+        let captured_at: String = conn
+            .query_row(
+                "SELECT completed_at_utc FROM account_refresh_runs ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute("DELETE FROM account_method_attempts", [])
+            .unwrap();
+
+        let summary = build_dashboard_summary(&conn, "remote").unwrap();
+        let usage = summary
+            .connectors
+            .iter()
+            .find(|item| item.id == "account-usage")
+            .unwrap();
+        assert_eq!(usage.status, "connected");
+        assert_eq!(usage.freshness, "fresh");
+        assert_eq!(usage.last_run_at_utc, captured_at);
+        assert!(usage.detail.contains("legacy refresh metadata"));
+        assert!(usage.age_seconds.is_some());
     }
 }

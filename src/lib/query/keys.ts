@@ -28,6 +28,9 @@ export const queryKeys = {
   diagnostics: {
     setup: () => ["diagnostics", "setup"] as const,
   },
+  runtimes: {
+    codex: () => ["runtimes", "codex"] as const,
+  },
   refresh: {
     status: () => ["refresh", "status"] as const,
   },

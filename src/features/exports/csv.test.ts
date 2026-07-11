@@ -32,8 +32,9 @@ describe("export CSV helpers", () => {
 
     expect(csv).toContain("generated_at_utc,data_mode,refresh_status,timezone,last_refresh_label");
     expect(csv).toContain("2026-07-02T19:30:00.000Z,combined,idle,America/New_York,2m ago");
-    expect(csv).toContain("metric_key,label,value,delta,status,coverage_percent,confidence,source_kind");
-    expect(csv).toContain("lifetime,Lifetime tokens,38.1B,12.4% vs last 30 days,positive,72,medium,Local history");
+    expect(csv).toContain("source_family,metric_key,label,value,delta,status,coverage_percent,confidence,source_kind");
+    expect(csv).toContain("account,account-lifetime,Account lifetime,99B");
+    expect(csv).toContain("local_history,local-lifetime,Local lifetime,38.1B");
     expect(csv).toContain("date,weekday,tokens,intensity");
     expect(csv).toContain("credit_count,expires_at_utc,expires_at_new_york,days_remaining,confidence");
     expect(csv).toContain("start_time,duration,tokens,peak_tokens,mode,sources");
@@ -121,6 +122,13 @@ function createExportFixtureSummary(): DashboardSummary {
         status: "positive",
         coverage: coverage[1],
       },
+    ],
+    accountMetrics: [{ ...summary.metrics[0], key: "account-lifetime", label: "Account lifetime", value: "99B", coverage: coverage[0] }],
+    localMetrics: [
+      { ...summary.metrics[0], key: "local-lifetime", label: "Local lifetime", value: "38.1B", coverage: coverage[0] },
+      { ...summary.metrics[1], key: "local-today", label: "Local today", value: "128.7M", coverage: coverage[0] },
+      { ...summary.metrics[2], key: "local-month", label: "Local this month", value: "3.62B", coverage: coverage[0] },
+      { ...summary.metrics[3], key: "local-peak", label: "Local peak session", value: "1.72B", coverage: coverage[0] },
     ],
     resetCredits: [
       {

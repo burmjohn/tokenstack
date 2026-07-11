@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub const MIGRATIONS: &[&str] = &[r#"
+pub const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE IF NOT EXISTS app_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS import_runs (
   files_seen INTEGER NOT NULL DEFAULT 0,
   events_seen INTEGER NOT NULL DEFAULT 0,
   events_imported INTEGER NOT NULL DEFAULT 0,
+  warning_count INTEGER NOT NULL DEFAULT 0,
   warnings_json TEXT NOT NULL DEFAULT '[]'
 );
 
@@ -145,7 +147,13 @@ CREATE TABLE IF NOT EXISTS account_refresh_runs (
   redacted_error_message TEXT NOT NULL DEFAULT '',
   stderr_tail TEXT NOT NULL DEFAULT '',
   used_last_good_snapshot INTEGER NOT NULL DEFAULT 0,
-  method_statuses_json TEXT NOT NULL DEFAULT '[]'
+  method_statuses_json TEXT NOT NULL DEFAULT '[]',
+  exit_code INTEGER,
+  timed_out INTEGER NOT NULL DEFAULT 0,
+  child_terminated INTEGER,
+  argv_prefix_json TEXT NOT NULL DEFAULT '[]',
+  runtime_source TEXT,
+  runtime_display_path TEXT
 );
 
 CREATE TABLE IF NOT EXISTS account_identity_snapshots (
@@ -199,7 +207,44 @@ CREATE TABLE IF NOT EXISTS account_rate_limit_windows (
   resets_at_utc TEXT,
   FOREIGN KEY(bucket_row_id) REFERENCES account_rate_limit_buckets(id)
 );
-"#];
+"#,
+    r#"
+CREATE TABLE IF NOT EXISTS codex_runtime_settings (
+  singleton_key INTEGER PRIMARY KEY CHECK(singleton_key = 1),
+  display_path TEXT NOT NULL,
+  executable_path TEXT NOT NULL,
+  argv_prefix_json TEXT NOT NULL,
+  source TEXT NOT NULL,
+  validated_at_utc TEXT NOT NULL,
+  version TEXT NOT NULL
+);
+"#,
+    r#"
+CREATE TABLE IF NOT EXISTS account_method_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  refresh_run_id INTEGER NOT NULL,
+  method TEXT NOT NULL,
+  status TEXT NOT NULL,
+  redacted_error TEXT,
+  captured_at_utc TEXT NOT NULL,
+  schema_fingerprint TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(refresh_run_id) REFERENCES account_refresh_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS account_reset_credit_details (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reset_credit_snapshot_id INTEGER NOT NULL,
+  credit_id TEXT NOT NULL,
+  reset_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  granted_at_utc TEXT NOT NULL,
+  expires_at_utc TEXT,
+  title TEXT,
+  description TEXT,
+  FOREIGN KEY(reset_credit_snapshot_id) REFERENCES account_reset_credit_snapshots(id)
+);
+"#,
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageEvent {
@@ -223,6 +268,7 @@ pub struct ImportRunSummary {
     pub files_seen: usize,
     pub events_seen: usize,
     pub events_imported: usize,
+    pub warning_count: usize,
     pub warnings: Vec<String>,
 }
 
@@ -243,6 +289,89 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     for migration in MIGRATIONS {
         conn.execute_batch(migration)?;
+    }
+    let has_warning_count = conn
+        .prepare("PRAGMA table_info(import_runs)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .iter()
+        .any(|column| column == "warning_count");
+    if !has_warning_count {
+        conn.execute(
+            "ALTER TABLE import_runs ADD COLUMN warning_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    ensure_column(
+        conn,
+        "account_usage_snapshots",
+        "captured_at_utc",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(conn, "account_refresh_runs", "exit_code", "INTEGER")?;
+    ensure_column(
+        conn,
+        "account_refresh_runs",
+        "timed_out",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "account_refresh_runs", "child_terminated", "INTEGER")?;
+    ensure_column(
+        conn,
+        "account_refresh_runs",
+        "argv_prefix_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    ensure_column(conn, "account_refresh_runs", "runtime_source", "TEXT")?;
+    ensure_column(conn, "account_refresh_runs", "runtime_display_path", "TEXT")?;
+    ensure_column(
+        conn,
+        "account_usage_snapshots",
+        "schema_fingerprint",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "account_reset_credit_snapshots",
+        "captured_at_utc",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "account_reset_credit_snapshots",
+        "schema_fingerprint",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "account_rate_limit_buckets",
+        "captured_at_utc",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        conn,
+        "account_rate_limit_buckets",
+        "schema_fingerprint",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    Ok(())
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    declaration: &str,
+) -> rusqlite::Result<()> {
+    let columns = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|existing| existing == column) {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}"),
+            [],
+        )?;
     }
     Ok(())
 }
@@ -365,14 +494,15 @@ pub fn insert_import_run(conn: &Connection, summary: &ImportRunSummary) -> rusql
     conn.execute(
         r#"
         INSERT INTO import_runs
-          (source_kind, started_at_utc, completed_at_utc, status, files_seen, events_seen, events_imported, warnings_json)
-        VALUES ('local-codex-history', ?1, ?1, 'complete', ?2, ?3, ?4, ?5)
+          (source_kind, started_at_utc, completed_at_utc, status, files_seen, events_seen, events_imported, warning_count, warnings_json)
+        VALUES ('local-codex-history', ?1, ?1, 'complete', ?2, ?3, ?4, ?5, ?6)
         "#,
         params![
             now,
             summary.files_seen as i64,
             summary.events_seen as i64,
             summary.events_imported as i64,
+            summary.warning_count as i64,
             serde_json::to_string(&summary.warnings).unwrap_or_else(|_| "[]".to_string())
         ],
     )?;
@@ -512,6 +642,16 @@ pub fn insert_account_snapshot(
     conn: &Connection,
     snapshot: &AccountSnapshot,
 ) -> rusqlite::Result<i64> {
+    let transaction = conn.unchecked_transaction()?;
+    let run_id = insert_account_snapshot_inner(&transaction, snapshot)?;
+    transaction.commit()?;
+    Ok(run_id)
+}
+
+fn insert_account_snapshot_inner(
+    conn: &Connection,
+    snapshot: &AccountSnapshot,
+) -> rusqlite::Result<i64> {
     let run_id = insert_account_refresh_run(
         conn,
         &AccountRefreshRunInsert {
@@ -527,6 +667,16 @@ pub fn insert_account_snapshot(
             stderr_tail: &snapshot.diagnostics.stderr_tail,
             used_last_good_snapshot: snapshot.diagnostics.used_last_good_snapshot,
             method_statuses: &snapshot.methods,
+            schema_fingerprint: &snapshot.diagnostics.schema_fingerprint,
+            exit_code: snapshot.diagnostics.exit_code,
+            timed_out: false,
+            child_terminated: Some(snapshot.diagnostics.child_terminated),
+            argv_prefix: &snapshot.launch.argv_prefix,
+            runtime_source: infer_runtime_source(&snapshot.launch.argv_prefix),
+            runtime_display_path: infer_runtime_display(
+                &snapshot.launch.selected_executable,
+                &snapshot.launch.argv_prefix,
+            ),
         },
     )?;
 
@@ -541,67 +691,109 @@ pub fn insert_account_snapshot(
             snapshot.account.plan
         ],
     )?;
-    conn.execute(
-        r#"
-        INSERT INTO account_usage_snapshots (refresh_run_id, lifetime_tokens)
-        VALUES (?1, ?2)
-        "#,
-        params![run_id, snapshot.usage.lifetime_tokens],
-    )?;
-    for bucket in &snapshot.usage.daily_buckets {
+    if method_succeeded(&snapshot.methods, "account/usage/read") {
         conn.execute(
             r#"
+        INSERT INTO account_usage_snapshots
+          (refresh_run_id, lifetime_tokens, captured_at_utc, schema_fingerprint)
+        VALUES (?1, ?2, ?3, ?4)
+        "#,
+            params![
+                run_id,
+                snapshot.usage.lifetime_tokens,
+                snapshot.diagnostics.completed_at_utc,
+                snapshot.diagnostics.schema_fingerprint
+            ],
+        )?;
+        for bucket in &snapshot.usage.daily_buckets {
+            conn.execute(
+                r#"
             INSERT INTO account_daily_usage_buckets
               (refresh_run_id, usage_date, input_tokens, output_tokens, total_tokens)
             VALUES (?1, ?2, ?3, ?4, ?5)
             "#,
-            params![
-                run_id,
-                bucket.date,
-                bucket.input_tokens,
-                bucket.output_tokens,
-                bucket.total_tokens
-            ],
-        )?;
+                params![
+                    run_id,
+                    bucket.date,
+                    bucket.input_tokens,
+                    bucket.output_tokens,
+                    bucket.total_tokens
+                ],
+            )?;
+        }
     }
-    conn.execute(
-        r#"
-        INSERT INTO account_reset_credit_snapshots
-          (refresh_run_id, available_count, expires_at_utc)
-        VALUES (?1, ?2, ?3)
-        "#,
-        params![
-            run_id,
-            snapshot.reset_credits.available_count,
-            snapshot.reset_credits.expires_at_utc
-        ],
-    )?;
-    for bucket in &snapshot.rate_limits {
+    if method_succeeded(&snapshot.methods, "account/rateLimits/read") {
         conn.execute(
             r#"
-            INSERT INTO account_rate_limit_buckets (refresh_run_id, bucket_id, display_name)
-            VALUES (?1, ?2, ?3)
-            "#,
-            params![run_id, bucket.bucket_id, bucket.display_name],
+        INSERT INTO account_reset_credit_snapshots
+          (refresh_run_id, available_count, expires_at_utc, captured_at_utc, schema_fingerprint)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+            params![
+                run_id,
+                snapshot.reset_credits.available_count,
+                snapshot.reset_credits.expires_at_utc,
+                snapshot.diagnostics.completed_at_utc,
+                snapshot.diagnostics.schema_fingerprint
+            ],
         )?;
-        let bucket_row_id = conn.last_insert_rowid();
-        for window in &bucket.windows {
+        let reset_snapshot_id = conn.last_insert_rowid();
+        if let Some(details) = &snapshot.reset_credits.credits {
+            for detail in details {
+                conn.execute(
+                    r#"
+                    INSERT INTO account_reset_credit_details
+                      (reset_credit_snapshot_id, credit_id, reset_type, status, granted_at_utc,
+                       expires_at_utc, title, description)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    "#,
+                    params![
+                        reset_snapshot_id,
+                        detail.id,
+                        detail.reset_type,
+                        detail.status,
+                        detail.granted_at_utc,
+                        detail.expires_at_utc,
+                        detail.title,
+                        detail.description
+                    ],
+                )?;
+            }
+        }
+        for bucket in &snapshot.rate_limits {
             conn.execute(
                 r#"
+            INSERT INTO account_rate_limit_buckets
+              (refresh_run_id, bucket_id, display_name, captured_at_utc, schema_fingerprint)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+                params![
+                    run_id,
+                    bucket.bucket_id,
+                    bucket.display_name,
+                    snapshot.diagnostics.completed_at_utc,
+                    snapshot.diagnostics.schema_fingerprint
+                ],
+            )?;
+            let bucket_row_id = conn.last_insert_rowid();
+            for window in &bucket.windows {
+                conn.execute(
+                    r#"
                 INSERT INTO account_rate_limit_windows
                   (bucket_row_id, window_duration_mins, window_label, used_percent,
                    remaining_percent, resets_at_utc)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                 "#,
-                params![
-                    bucket_row_id,
-                    window.window_duration_mins,
-                    window.window_label,
-                    window.used_percent,
-                    window.remaining_percent,
-                    window.resets_at_utc
-                ],
-            )?;
+                    params![
+                        bucket_row_id,
+                        window.window_duration_mins,
+                        window.window_label,
+                        window.used_percent,
+                        window.remaining_percent,
+                        window.resets_at_utc
+                    ],
+                )?;
+            }
         }
     }
 
@@ -619,9 +811,10 @@ pub fn insert_account_refresh_error(
             started_at_utc: &now,
             completed_at_utc: &now,
             status: "unavailable",
-            selected_codex_executable: None,
-            launch_mode: None,
-            executable_candidates: &[],
+            selected_codex_executable: (!error.launch.selected_executable.is_empty())
+                .then_some(error.launch.selected_executable.as_str()),
+            launch_mode: Some(error.launch.mode.as_str()),
+            executable_candidates: &error.launch.candidates,
             first_failing_stage: Some(&error.stage),
             redacted_error_code: Some(account_error_code(error)),
             redacted_error_message: &error.public_message,
@@ -632,6 +825,16 @@ pub fn insert_account_refresh_error(
                 status: crate::codex_app_server::MethodStatus::Failed,
                 redacted_error: Some(error.public_message.clone()),
             }],
+            schema_fingerprint: "",
+            exit_code: error.exit_code,
+            timed_out: error.timed_out,
+            child_terminated: Some(error.child_terminated),
+            argv_prefix: &error.launch.argv_prefix,
+            runtime_source: infer_runtime_source(&error.launch.argv_prefix),
+            runtime_display_path: infer_runtime_display(
+                &error.launch.selected_executable,
+                &error.launch.argv_prefix,
+            ),
         },
     )
 }
@@ -649,6 +852,13 @@ struct AccountRefreshRunInsert<'a> {
     stderr_tail: &'a str,
     used_last_good_snapshot: bool,
     method_statuses: &'a [AccountMethodSnapshot],
+    schema_fingerprint: &'a str,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    child_terminated: Option<bool>,
+    argv_prefix: &'a [String],
+    runtime_source: Option<&'a str>,
+    runtime_display_path: &'a str,
 }
 
 fn insert_account_refresh_run(
@@ -660,8 +870,9 @@ fn insert_account_refresh_run(
         INSERT INTO account_refresh_runs
           (started_at_utc, completed_at_utc, status, selected_codex_executable, launch_mode,
            executable_candidates_json, first_failing_stage, redacted_error_code,
-           redacted_error_message, stderr_tail, used_last_good_snapshot, method_statuses_json)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+           redacted_error_message, stderr_tail, used_last_good_snapshot, method_statuses_json,
+           exit_code, timed_out, child_terminated, argv_prefix_json, runtime_source, runtime_display_path)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
         "#,
         params![
             insert.started_at_utc,
@@ -677,9 +888,57 @@ fn insert_account_refresh_run(
             insert.stderr_tail,
             if insert.used_last_good_snapshot { 1 } else { 0 },
             serde_json::to_string(insert.method_statuses).unwrap_or_else(|_| "[]".to_string()),
+            insert.exit_code,
+            if insert.timed_out { 1 } else { 0 },
+            insert
+                .child_terminated
+                .map(|value| if value { 1 } else { 0 }),
+            serde_json::to_string(insert.argv_prefix).unwrap_or_else(|_| "[]".into()),
+            insert.runtime_source,
+            insert.runtime_display_path,
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    let run_id = conn.last_insert_rowid();
+    for method in insert.method_statuses {
+        conn.execute(
+            r#"
+            INSERT INTO account_method_attempts
+              (refresh_run_id, method, status, redacted_error, captured_at_utc, schema_fingerprint)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            params![
+                run_id,
+                method.method,
+                method_status_name(method.status),
+                method.redacted_error,
+                insert.completed_at_utc,
+                insert.schema_fingerprint
+            ],
+        )?;
+    }
+    Ok(run_id)
+}
+
+fn infer_runtime_source(argv_prefix: &[String]) -> Option<&str> {
+    (!argv_prefix.is_empty()).then_some("npm")
+}
+
+fn infer_runtime_display<'a>(selected: &'a str, argv_prefix: &'a [String]) -> &'a str {
+    argv_prefix.first().map(String::as_str).unwrap_or(selected)
+}
+
+fn method_succeeded(methods: &[AccountMethodSnapshot], method: &str) -> bool {
+    methods.iter().any(|attempt| {
+        attempt.method == method && attempt.status == crate::codex_app_server::MethodStatus::Ok
+    })
+}
+
+fn method_status_name(status: crate::codex_app_server::MethodStatus) -> &'static str {
+    match status {
+        crate::codex_app_server::MethodStatus::Ok => "ok",
+        crate::codex_app_server::MethodStatus::Failed => "failed",
+        crate::codex_app_server::MethodStatus::Skipped => "skipped",
+    }
 }
 
 fn account_error_code(error: &AccountConnectorError) -> &'static str {
@@ -730,6 +989,212 @@ mod tests {
         let conn = open_memory().unwrap();
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap();
+    }
+
+    #[test]
+    fn migrations_add_typed_codex_runtime_settings_without_replacing_existing_schema() {
+        let conn = open_memory().unwrap();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(codex_runtime_settings)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(
+            columns,
+            [
+                "singleton_key",
+                "display_path",
+                "executable_path",
+                "argv_prefix_json",
+                "source",
+                "validated_at_utc",
+                "version",
+            ]
+        );
+    }
+
+    #[test]
+    fn migrations_add_per_method_attempts_and_separate_reset_credit_details() {
+        let conn = open_memory().unwrap();
+        let tables: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('account_method_attempts', 'account_reset_credit_details') ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            tables,
+            ["account_method_attempts", "account_reset_credit_details"]
+        );
+
+        for (table, expected) in [
+            (
+                "account_usage_snapshots",
+                vec!["captured_at_utc", "schema_fingerprint"],
+            ),
+            (
+                "account_reset_credit_snapshots",
+                vec!["captured_at_utc", "schema_fingerprint"],
+            ),
+            (
+                "account_rate_limit_buckets",
+                vec!["captured_at_utc", "schema_fingerprint"],
+            ),
+        ] {
+            let columns: Vec<String> = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap()
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for column in expected {
+                assert!(columns.iter().any(|actual| actual == column));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_refresh_persists_launch_candidates_and_method_error() {
+        let conn = open_memory().unwrap();
+        let error = AccountConnectorError {
+            kind: crate::codex_app_server::AccountConnectorErrorKind::Spawn,
+            stage: "spawn".to_string(),
+            public_message: "access denied".to_string(),
+            exit_code: Some(23),
+            timed_out: true,
+            child_terminated: true,
+            launch: crate::codex_app_server::AccountLaunchDiagnostics {
+                selected_executable: "C:\\Program Files\\Codex\\codex.exe".to_string(),
+                argv_prefix: Vec::new(),
+                mode: crate::codex_app_server::CodexLaunchMode::RuntimeValidation,
+                candidates: vec![
+                    "configured:C:\\Program Files\\Codex\\codex.exe:access_denied".to_string(),
+                ],
+            },
+            failure_class: crate::codex_app_server::AccountConnectorFailureClass::Transport,
+        };
+        let run_id = insert_account_refresh_error(&conn, &error).unwrap();
+        let (selected, candidates): (Option<String>, String) = conn
+            .query_row(
+                "SELECT selected_codex_executable, executable_candidates_json FROM account_refresh_runs WHERE id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            selected.as_deref(),
+            Some("C:\\Program Files\\Codex\\codex.exe")
+        );
+        let process: (Option<i64>, i64, i64) = conn.query_row(
+            "SELECT exit_code, timed_out, child_terminated FROM account_refresh_runs WHERE id = ?1",
+            [run_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(process, (Some(23), 1, 1));
+        assert!(candidates.contains("access_denied"));
+        let method_error: String = conn
+            .query_row(
+                "SELECT redacted_error FROM account_method_attempts WHERE refresh_run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(method_error, "access denied");
+    }
+
+    #[test]
+    fn successful_rate_limit_method_persists_reset_summary_and_detail_separately() {
+        use crate::codex_app_server::*;
+        let conn = open_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let snapshot = AccountSnapshot {
+            status: AccountRefreshStatus::Connected,
+            launch: AccountLaunchDiagnostics {
+                selected_executable: "codex".to_string(),
+                argv_prefix: Vec::new(),
+                mode: CodexLaunchMode::ListenStdioNoMcp,
+                candidates: vec!["codex".to_string()],
+            },
+            diagnostics: AccountRefreshDiagnostics {
+                started_at_utc: now.clone(),
+                completed_at_utc: now,
+                first_failing_stage: None,
+                redacted_error_code: None,
+                redacted_error_message: String::new(),
+                stderr_tail: String::new(),
+                used_last_good_snapshot: false,
+                schema_fingerprint: APP_SERVER_SCHEMA_FINGERPRINT.to_string(),
+                exit_code: None,
+                child_terminated: true,
+            },
+            account: AccountIdentitySnapshot::default(),
+            usage: AccountUsageSnapshot::default(),
+            reset_credits: AccountResetCreditsSnapshot {
+                available_count: Some(1),
+                expires_at_utc: Some("2026-08-01T00:00:00Z".to_string()),
+                credits: Some(vec![AccountResetCreditDetail {
+                    id: "credit-1".to_string(),
+                    reset_type: "weekly".to_string(),
+                    status: "available".to_string(),
+                    granted_at_utc: "2026-07-01T00:00:00Z".to_string(),
+                    expires_at_utc: Some("2026-08-01T00:00:00Z".to_string()),
+                    title: Some("Reset".to_string()),
+                    description: None,
+                }]),
+            },
+            rate_limits: Vec::new(),
+            methods: vec![AccountMethodSnapshot {
+                method: "account/rateLimits/read".to_string(),
+                status: MethodStatus::Ok,
+                redacted_error: None,
+            }],
+        };
+        insert_account_snapshot(&conn, &snapshot).unwrap();
+        let summary_count: i64 = conn
+            .query_row(
+                "SELECT available_count FROM account_reset_credit_snapshots",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let detail_id: String = conn
+            .query_row(
+                "SELECT credit_id FROM account_reset_credit_details",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(summary_count, 1);
+        assert_eq!(detail_id, "credit-1");
+        let child_terminated: i64 = conn
+            .query_row(
+                "SELECT child_terminated FROM account_refresh_runs",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(child_terminated, 1);
+
+        let rollback_conn = open_memory().unwrap();
+        rollback_conn
+            .execute_batch(
+                "CREATE TRIGGER reject_identity BEFORE INSERT ON account_identity_snapshots BEGIN SELECT RAISE(ABORT, 'forced mid-write failure'); END;",
+            )
+            .unwrap();
+        assert!(insert_account_snapshot(&rollback_conn, &snapshot).is_err());
+        for table in ["account_refresh_runs", "account_method_attempts"] {
+            let count: i64 = rollback_conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} escaped transaction rollback");
+        }
     }
 
     #[test]

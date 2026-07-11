@@ -22,6 +22,12 @@ and npm-global install locations. Setup diagnostics show the selected
 executable, launch mode, first failing account stage, and last successful
 account refresh.
 
+The Windows release smoke uses the packaged TokenStack executable and a
+synthetic native app-server runtime. This proves process launch, protocol reads,
+runtime-setting persistence, child cleanup, and diagnostics export without
+using an authenticated account. A manual installed-Windows release check still
+verifies Codex App, standalone CLI, and npm CLI discovery and account behavior.
+
 TokenStack must not parse raw Codex auth tokens, call private ChatGPT/Codex web
 endpoints, launch automatic interactive TUI/PTTY fallbacks, or call the reset
 credit consume route.

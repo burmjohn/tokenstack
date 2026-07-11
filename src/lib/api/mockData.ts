@@ -96,6 +96,8 @@ export function createMockDashboardSummary(dataMode: DataMode = "combined"): Das
         coverage: coverage[1],
       },
     ],
+    accountMetrics: [],
+    localMetrics: [],
     heatmap,
     resetCredits: [],
     coverage,
@@ -108,6 +110,8 @@ export function createMockDashboardSummary(dataMode: DataMode = "combined"): Das
         readOnly: true,
         safetyClass: "Local",
         lastRunAtUtc: "",
+        freshness: "unavailable",
+        ageSeconds: null,
       },
       {
         id: "known-reset-credit",
@@ -117,6 +121,8 @@ export function createMockDashboardSummary(dataMode: DataMode = "combined"): Das
         readOnly: true,
         safetyClass: "Snapshot",
         lastRunAtUtc: "",
+        freshness: "unavailable",
+        ageSeconds: null,
       },
       {
         id: "rate-limit-windows",
@@ -126,6 +132,8 @@ export function createMockDashboardSummary(dataMode: DataMode = "combined"): Das
         readOnly: true,
         safetyClass: "Snapshot",
         lastRunAtUtc: "",
+        freshness: "unavailable",
+        ageSeconds: null,
       },
     ],
     sessions: [],
@@ -140,10 +148,13 @@ export function createMockDashboardSummary(dataMode: DataMode = "combined"): Das
 
 export function createMockSetupDiagnostics(): SetupDiagnostics {
   return {
+    schemaVersion: 2,
+    dataMode: "combined",
     appDataDir: "~/.local/share/tokenstack",
     databasePath: "~/.local/share/tokenstack/tokenstack.sqlite3",
     authHome: "~",
     selectedCodexExecutable: null,
+    configuredCodexRuntimeDisplay: null,
     codexLaunchMode: null,
     firstFailingAccountStage: null,
     lastSuccessfulAccountRefresh: null,
@@ -174,5 +185,9 @@ export function createMockSetupDiagnostics(): SetupDiagnostics {
     ],
     latestImportRun: null,
     connectorRuns: [],
+    runtimeCandidates: [],
+    selectedRuntime: null,
+    latestAccountRun: null,
+    displayedMetrics: [],
   };
 }

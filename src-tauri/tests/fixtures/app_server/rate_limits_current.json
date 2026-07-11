@@ -1,0 +1,42 @@
+{
+  "rateLimits": {
+    "limitId": "legacy",
+    "limitName": "Legacy",
+    "primary": { "usedPercent": 99, "windowDurationMins": 60, "resetsAt": 1783699200 },
+    "secondary": null,
+    "credits": null,
+    "individualLimit": null,
+    "planType": null,
+    "rateLimitReachedType": null
+  },
+  "rateLimitsByLimitId": {
+    "other": {
+      "limitId": "other",
+      "limitName": "Other",
+      "primary": { "usedPercent": 11, "windowDurationMins": 42, "resetsAt": null },
+      "secondary": null,
+      "credits": null,
+      "individualLimit": null,
+      "planType": null,
+      "rateLimitReachedType": null
+    },
+    "codex": {
+      "limitId": "codex",
+      "limitName": "Codex",
+      "primary": { "usedPercent": 25.5, "windowDurationMins": 300, "resetsAt": 1783699200 },
+      "secondary": { "usedPercent": 40, "windowDurationMins": 10080, "resetsAt": 1784304000 },
+      "credits": null,
+      "individualLimit": null,
+      "planType": null,
+      "rateLimitReachedType": null,
+      "unknownFutureField": true
+    }
+  },
+  "rateLimitResetCredits": {
+    "availableCount": 2,
+    "credits": [
+      { "id": "synthetic-1", "resetType": "primary", "status": "available", "grantedAt": 1783600000, "expiresAt": null, "title": null, "description": null },
+      { "id": "synthetic-2", "resetType": "secondary", "status": "available", "grantedAt": 1783600100, "expiresAt": 1784304000, "title": "Synthetic", "description": "Synthetic fixture" }
+    ]
+  }
+}

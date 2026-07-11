@@ -222,18 +222,18 @@ runtime. The frontend must never receive credentials or raw child output.
 without a shell, and Windows CI executes the protocol tests instead of only
 building the package.
 
-- [ ] Replace the POSIX-shell fixture with a compiled Rust test helper that can
+- [x] Replace the POSIX-shell fixture with a compiled Rust test helper that can
   emit happy, partial, logged-out, malformed, wrong-ID, notification, hung,
   early-exit, and unsupported-argument scenarios.
-- [ ] Write failing Windows-safe tests for runtime discovery, direct spawn,
+- [x] Write failing Windows-safe tests for runtime discovery, direct spawn,
   initialization, method reads, timeout termination, and exit-code capture.
-- [ ] Add a static allow-list test that records every outbound account method
+- [x] Add a static allow-list test that records every outbound account method
   and fails if any method other than `account/read`,
   `account/rateLimits/read`, or `account/usage/read` is sent after initialize.
-- [ ] Add a repository scan test that fails on the literal
+- [x] Add a repository scan test that fails on the literal
   `account/rateLimitResetCredit/consume` outside test assertions and plan/docs
   allow-lists.
-- [ ] Run the suite on `windows-latest` and Linux before production changes.
+- [x] Run the suite on `windows-latest` and Linux before production changes.
 
 **Proof:** Both operating systems show the expected red tests for missing
 runtime settings/discovery and green existing protocol behavior.
@@ -257,19 +257,19 @@ runtime settings/discovery and green existing protocol behavior.
 6. Native standalone install paths under `%LOCALAPPDATA%\Programs`.
 7. Read-only discovery of installed MSIX package resources.
 
-- [ ] Deduplicate candidates by normalized/canonical path while preserving
+- [x] Deduplicate candidates by normalized/canonical path while preserving
   source and precedence.
-- [ ] Validate candidates by direct process spawn with a short version/help
+- [x] Validate candidates by direct process spawn with a short version/help
   timeout; a file that exists but returns access denied is not valid.
-- [ ] Model every candidate as a typed launch specification containing a display
+- [x] Model every candidate as a typed launch specification containing a display
   path, native executable path, and fixed argument prefix. For an npm shim,
   parse only the standard launcher structure to resolve `node.exe` plus the
   Codex JavaScript entrypoint; never execute `.cmd`/`.bat` through `cmd.exe`.
-- [ ] Reject an npm shim whose target cannot be resolved unambiguously. Do not
+- [x] Reject an npm shim whose target cannot be resolved unambiguously. Do not
   accept arbitrary command text or persist shell fragments.
-- [ ] Record all candidates and validation outcomes in sanitized diagnostics,
+- [x] Record all candidates and validation outcomes in sanitized diagnostics,
   including access denied, file not found, timeout, and nonzero exit.
-- [ ] Select the first validated candidate, not the first existing path.
+- [x] Select the first validated candidate, not the first existing path.
 
 **Proof:** Fixture tests cover thin GUI `PATH`, per-user Codex App runtime,
 standalone CLI, npm install, inaccessible WindowsApps runtime, stale configured
@@ -290,17 +290,17 @@ path, and no runtime found.
 **Deliverable:** A selected executable survives app restart and is used by every
 account refresh.
 
-- [ ] Add an additive settings migration for the typed configured runtime:
+- [x] Add an additive settings migration for the typed configured runtime:
   display path, native executable path, fixed argument prefix, and source.
-- [ ] Add Tauri commands to list candidates, choose/clear a path, and validate
+- [x] Add Tauri commands to list candidates, choose/clear a path, and validate
   the current selection.
-- [ ] Pass the complete configured `CodexLaunchSpec` into
+- [x] Pass the complete configured `CodexLaunchSpec` into
   `CodexAppServerConfig.explicit_runtime` from `refresh_all`; remove the current
   unconfigurable default-only path without dropping an npm runtime's argument
   prefix.
-- [ ] Validate before persisting. Return a structured failure without replacing
+- [x] Validate before persisting. Return a structured failure without replacing
   the last working selection.
-- [ ] Store the typed launch specification and validation metadata only. Never
+- [x] Store the typed launch specification and validation metadata only. Never
   copy the executable, persist arbitrary shell commands, or read authentication
   files.
 
@@ -319,20 +319,20 @@ automatic discovery.
 **Deliverable:** A bounded read-only JSON-RPC client that leaves no child
 processes behind and explains exactly where it failed.
 
-- [ ] Keep direct argument-array launch and newline-delimited JSON framing. Build
+- [x] Keep direct argument-array launch and newline-delimited JSON framing. Build
   the final arguments as `launch_spec.argv_prefix + ["app-server", ...]` and
   pass them directly to `Command`.
-- [ ] Use an ordered, bounded launch strategy based on current official CLI
+- [x] Use an ordered, bounded launch strategy based on current official CLI
   support: canonical stdio mode first, one compatibility fallback only after a
   proven argument rejection, and no fallback after timeout/auth/protocol errors.
-- [ ] Include `capabilities.experimentalApi = true`, then send `initialized`.
-- [ ] Match responses by ID, accept notifications at any point, reject
+- [x] Include `capabilities.experimentalApi = true`, then send `initialized`.
+- [x] Match responses by ID, accept notifications at any point, reject
   unsupported server requests, and preserve method context on JSON-RPC errors.
-- [ ] Drain stderr concurrently into a bounded redacted suffix.
-- [ ] Separate validation, initialize, request, and whole-refresh timeouts.
-- [ ] On every timeout/error/drop path, close stdin, terminate the child, wait
+- [x] Drain stderr concurrently into a bounded redacted suffix.
+- [x] Separate validation, initialize, request, and whole-refresh timeouts.
+- [x] On every timeout/error/drop path, close stdin, terminate the child, wait
   for exit, and record whether termination succeeded.
-- [ ] Keep account, rate-limit, and usage reads independently degradable after
+- [x] Keep account, rate-limit, and usage reads independently degradable after
   authentication succeeds.
 
 **Proof:** Tests assert no orphan process, no retry on timeout, one fallback on
@@ -352,18 +352,18 @@ and redaction of token-like content.
 **Deliverable:** Schema drift produces a visible partial failure, not silently
 empty data.
 
-- [ ] Generate synthetic fixtures from the upstream TypeScript/JSON schemas and
+- [x] Generate synthetic fixtures from the upstream TypeScript/JSON schemas and
   record the upstream commit SHA and generation date.
-- [ ] Parse `rateLimitsByLimitId` first, with `rateLimits` fallback.
-- [ ] Sort `codex` first while preserving every additional bucket and unknown
+- [x] Parse `rateLimitsByLimitId` first, with `rateLimits` fallback.
+- [x] Sort `codex` first while preserving every additional bucket and unknown
   window duration.
-- [ ] Parse optional reset-credit summary and detail rows. Distinguish `null`,
+- [x] Parse optional reset-credit summary and detail rows. Distinguish `null`,
   explicit zero, and a positive count.
-- [ ] Parse account usage summary and nullable daily buckets. Distinguish absent
+- [x] Parse account usage summary and nullable daily buckets. Distinguish absent
   fields from explicit zero.
-- [ ] Store the method status and raw schema version/fingerprint needed for
+- [x] Store the method status and raw schema version/fingerprint needed for
   diagnosis, but do not store raw response bodies.
-- [ ] Preserve the last-good facet separately when one method fails.
+- [x] Preserve the last-good facet separately when one method fails.
 
 **Proof:** Golden fixture tests cover current schema, backward-compatible rate
 limits, missing optional fields, unknown extra fields, malformed required
@@ -381,19 +381,19 @@ fields, explicit zero, and partial method success.
 **Deliverable:** Local history includes every parseable local `token_count`
 event once, regardless of whether Codex App or CLI wrote it.
 
-- [ ] Discover the shared default `CODEX_HOME`, explicit `CODEX_HOME`, session
+- [x] Discover the shared default `CODEX_HOME`, explicit `CODEX_HOME`, session
   and archived-session locations, and bounded state/index sources without
   scanning unrelated directories.
-- [ ] Parse the known `payload.info.total_token_usage`, `last_token_usage`, and
+- [x] Parse the known `payload.info.total_token_usage`, `last_token_usage`, and
   direct `payload.info` variants with snake_case and camelCase aliases.
-- [ ] Treat cumulative counters as snapshots and derive nonnegative deltas per
+- [x] Treat cumulative counters as snapshots and derive nonnegative deltas per
   session where needed; do not sum repeated cumulative totals as independent
   usage.
-- [ ] Deduplicate by stable source identity, session/turn identity, timestamp,
+- [x] Deduplicate by stable source identity, session/turn identity, timestamp,
   and token counters so App and CLI views of the same event do not double count.
-- [ ] Keep warning samples shape-only and bounded; never include prompt or tool
+- [x] Keep warning samples shape-only and bounded; never include prompt or tool
   bodies.
-- [ ] Compute local coverage from parseable evidence, not only newly inserted
+- [x] Compute local coverage from parseable evidence, not only newly inserted
   rows.
 
 **Proof:** Tests cover App-written JSONL, CLI-written JSONL, shared files,
@@ -410,16 +410,16 @@ duplicates, cumulative updates, archives, malformed lines, explicit
 
 **Deliverable:** Each UI value has one explicit source, freshness, and status.
 
-- [ ] Make account refresh runs record candidate diagnostics even when
+- [x] Make account refresh runs record candidate diagnostics even when
   resolution/spawn fails.
-- [ ] Associate usage, rate limits, and reset credits with method-level status
+- [x] Associate usage, rate limits, and reset credits with method-level status
   and capture time.
-- [ ] Query the newest successful snapshot per facet, not only the newest run.
-- [ ] Mark last-good data stale/degraded when the latest attempt for that facet
+- [x] Query the newest successful snapshot per facet, not only the newest run.
+- [x] Mark last-good data stale/degraded when the latest attempt for that facet
   failed.
-- [ ] Keep local-history rows and account-snapshot rows in separate tables and
+- [x] Keep local-history rows and account-snapshot rows in separate tables and
   formulas.
-- [ ] Collapse source coverage to one latest row per metric.
+- [x] Collapse source coverage to one latest row per metric.
 
 **Proof:** A sequence of success, partial failure, total failure, and recovery
 returns the correct current/last-good value and status for every facet.
@@ -441,16 +441,16 @@ returns the correct current/last-good value and status for every facet.
 **Deliverable:** A Windows user can resolve `missing_cli` without setting an
 environment variable or opening a terminal.
 
-- [ ] Show automatic candidates, source, version, validation result, and selected
+- [x] Show automatic candidates, source, version, validation result, and selected
   status.
-- [ ] Add the Tauri dialog plugin and least-privilege capability needed for a
+- [x] Add the Tauri dialog plugin and least-privilege capability needed for a
   native executable picker, plus **Use**, **Clear**, and **Test connection**
   actions. Scope the picker to files and validate the selected file in Rust.
-- [ ] After selection, validate immediately, persist only on success, refresh
+- [x] After selection, validate immediately, persist only on success, refresh
   account facets, and invalidate dashboard/setup queries.
-- [ ] Show exact staged outcomes: runtime not found, access denied, unsupported
+- [x] Show exact staged outcomes: runtime not found, access denied, unsupported
   CLI, logged out, initialize timeout, method partial failure, and connected.
-- [ ] Show the last successful account refresh and whether displayed data is
+- [x] Show the last successful account refresh and whether displayed data is
   stale.
 
 **Proof:** Frontend tests cover missing to connected, invalid selection,
@@ -467,15 +467,15 @@ selection persistence, clear to auto-discovery, and partial-method status.
 
 **Deliverable:** Combined mode visibly contains both source families.
 
-- [ ] Render account lifetime/today/month when available, with stale state when
+- [x] Render account lifetime/today/month when available, with stale state when
   last-good is used.
-- [ ] Render local lifetime/today/month/session/heatmap as local history in a
+- [x] Render local lifetime/today/month/session/heatmap as local history in a
   distinct section or clearly distinct metric labels.
-- [ ] When account usage is unavailable, keep local history visible and show an
+- [x] When account usage is unavailable, keep local history visible and show an
   account-specific failure alongside it.
-- [ ] Keep rate limits and reset credits unavailable unless explicitly returned;
+- [x] Keep rate limits and reset credits unavailable unless explicitly returned;
   explicit zero remains distinguishable from unavailable.
-- [ ] Give every connector and coverage row a stable unique key and one latest
+- [x] Give every connector and coverage row a stable unique key and one latest
   entry.
 
 **Proof:** Snapshot/component tests cover local-only, remote-only, combined
@@ -495,17 +495,17 @@ local history.
 **Deliverable:** One exported file explains discovery, launch, protocol, local
 import, storage, and UI source selection without exposing sensitive content.
 
-- [ ] Bump the diagnostics schema and include candidate paths/sources/results,
+- [x] Bump the diagnostics schema and include candidate paths/sources/results,
   selected path, version, launch arguments as a safe enum, first failing stage,
   exit code, timeout, child cleanup, method statuses, last-good use, schema
   fingerprint, local roots, parse counts, duplicate counts, and warning counts.
-- [ ] Include selected data mode and the source/freshness/status behind each
+- [x] Include selected data mode and the source/freshness/status behind each
   displayed dashboard metric.
-- [ ] Redact tokens, cookies, prompts, response bodies, raw JSONL content, and
+- [x] Redact tokens, cookies, prompts, response bodies, raw JSONL content, and
   account-identifying labels.
-- [ ] Write atomically to the diagnostics directory, return the final path, and
+- [x] Write atomically to the diagnostics directory, return the final path, and
   show success/failure in the UI.
-- [ ] Add a test that reopens and parses the written file from disk.
+- [x] Add a test that reopens and parses the written file from disk.
 
 **Proof:** Secret/fixture scans pass, a token-seeded test remains redacted, and
 the frontend displays the returned saved path.
@@ -524,22 +524,22 @@ the frontend displays the returned saved path.
 
 **Deliverable:** A green build means more than compilation.
 
-- [ ] Run Rust unit/integration tests on `windows-latest`, including the native
+- [x] Run Rust unit/integration tests on `windows-latest`, including the native
   fake app-server and runtime discovery fixtures.
-- [ ] Add an argument-gated packaged smoke entrypoint that reuses production
+- [x] Add an argument-gated packaged smoke entrypoint that reuses production
   refresh and diagnostics code, accepts only a test runtime launch spec from the
   CI harness, exports diagnostics, verifies expected method results and child
   cleanup, then exits with a meaningful process code. Compile the entrypoint
   into release artifacts but make it inert unless the explicit smoke argument
   is present.
-- [ ] Build the Tauri Windows artifact, install/unpack it in CI, invoke the
+- [x] Build the Tauri Windows artifact, install/unpack it in CI, invoke the
   packaged smoke entrypoint, and prove it can start the fake Codex executable
   from a path containing spaces.
-- [ ] Export diagnostics during the smoke and upload the sanitized file as a CI
+- [x] Export diagnostics during the smoke and upload the sanitized file as a CI
   artifact.
-- [ ] Keep a manual release checklist for real Codex App and standalone/npm CLI
+- [x] Keep a manual release checklist for real Codex App and standalone/npm CLI
   because hosted CI has no authenticated Codex account.
-- [ ] Test both a thin GUI `PATH` and a user-selected executable.
+- [x] Test both a thin GUI `PATH` and a user-selected executable.
 
 **Proof:** CI logs show protocol tests on Windows, packaged smoke success, child
 cleanup, diagnostics file creation, and artifact upload.
@@ -607,22 +607,54 @@ available. Never convert an unavailable real-Windows test into a pass.
 
 - [ ] The installed app can discover, select, persist, validate, and use a Codex
   App or CLI runtime on Windows.
-- [ ] Account usage comes only from `account/usage/read`.
-- [ ] Rate limits and reset credits come only from
+- [x] Account usage comes only from `account/usage/read`.
+- [x] Rate limits and reset credits come only from
   `account/rateLimits/read`.
-- [ ] Local App and CLI token history remains local and is visible in combined
+- [x] Local App and CLI token history remains local and is visible in combined
   mode.
-- [ ] Every missing or stale facet is explicit; unavailable is never rendered as
+- [x] Every missing or stale facet is explicit; unavailable is never rendered as
   zero.
-- [ ] Protocol and discovery tests execute on Windows and Linux.
-- [ ] The packaged Windows smoke launches a fake runtime from a path with spaces.
+- [x] Protocol and discovery tests execute on Windows and Linux.
+- [x] The packaged Windows smoke launches a fake runtime from a path with spaces.
 - [ ] Real installed-Windows evidence covers Codex App and standalone/npm CLI.
-- [ ] Diagnostics writes and reopens a sanitized file that identifies the actual
+- [x] Diagnostics writes and reopens a sanitized file that identifies the actual
   failing stage.
-- [ ] Static and runtime tests prove no consume call, token parsing, private web
+- [x] Static and runtime tests prove no consume call, token parsing, private web
   endpoint, shell launch, or interactive fallback exists.
-- [ ] Full verification passes, the change is committed in Lore format, pushed,
+- [x] Full verification passes, the change is committed in Lore format, pushed,
   and GitHub checks are green.
+
+## Execution evidence — 2026-07-10
+
+Local Linux implementation and release verification is complete on branch
+`codex/codex-app-cli-usage-reliability-v3`:
+
+- Rust on Linux: 126 unit tests and 2 cross-platform integration tests passed.
+- Rust on Windows: 122 unit tests and 5 integration tests passed, including
+  mixed-case `Path` discovery and direct native launch from a path with spaces.
+- Frontend: 74 tests passed; ESLint and the production Vite build passed.
+- `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` passed.
+- Secret and synthetic-fixture scans passed.
+- `pnpm tauri:build` produced
+  `src-tauri/target/release/tokenstack` from the production configuration.
+- `git diff --check` passed.
+- Diagnostics tests write atomically, reopen and parse schema v2, exercise
+  concurrent filenames, and verify backend plus browser-fallback redaction.
+- The Windows workflow now installs the NSIS artifact and invokes the installed
+  executable twice: an explicit runtime and automatic discovery under a thin
+  `PATH`, both using a native fake runtime from a path containing spaces.
+- GitHub Actions run
+  [29137283843](https://github.com/burmjohn/tokenstack/actions/runs/29137283843)
+  passed for commit `50f4c37e39b3065041f1e2bbb9940601e4fafdd8`.
+  Its installed-package log contains `PACKAGED_SMOKE_OK` for both `explicit`
+  and `automatic` modes, and it uploaded
+  `tokenstack-windows-packaged-smoke-diagnostics` plus
+  `tokenstack-windows-x64-setup`.
+
+Pending evidence that must not be treated as passed:
+
+- A real installed Windows environment with authenticated Codex App and
+  standalone/npm CLI must complete the manual checklist in `docs/testing.md`.
 
 ## Risks and mitigations
 

@@ -15,13 +15,13 @@ import { Progress } from "../ui/progress";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
-import { useDashboardSummary, useRefreshAll, useSetupDiagnostics } from "../../features/dashboard/useDashboardSummary";
+import { useCodexRuntimeActions, useCodexRuntimes, useDashboardSummary, useRefreshAll, useSetupDiagnostics } from "../../features/dashboard/useDashboardSummary";
 import { listenForDesktopMenuCommands } from "../../features/desktop/commands";
 import { installDesktopContextMenu } from "../../features/desktop/contextMenu";
 import { buildDashboardUsageCsv, buildUsageCsvFilename } from "../../features/exports/csv";
 import { downloadTextFile } from "../../features/exports/download";
-import { exportSetupDiagnostics } from "../../lib/api/tauri";
-import type { DataMode, DashboardSummary, MetricCoverage, SetupDiagnostics } from "../../lib/schemas/dashboard";
+import { chooseCodexRuntime, exportSetupDiagnostics } from "../../lib/api/tauri";
+import type { CodexRuntimeSource, DataMode, DashboardSummary, MetricCoverage, SetupDiagnostics } from "../../lib/schemas/dashboard";
 import { cn } from "../../lib/utils";
 import { createDesktopShellActionHandler } from "./desktopShellActions";
 import { DesktopStatusBar } from "./DesktopStatusBar";
@@ -231,7 +231,7 @@ function CommandCenterContent({
   if (activeSection === "usage") {
     return (
       <div className="space-y-4">
-        <MetricStrip summary={summary} />
+        <UsageMetricFamilies summary={summary} />
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)] gap-4 max-[1100px]:grid-cols-1">
           <TokenHeatmap summary={summary} />
           <RateLimitWindows summary={summary} />
@@ -269,7 +269,7 @@ function CommandCenterContent({
 function DashboardOverview({ summary }: { summary: DashboardSummary }) {
   return (
     <div className="space-y-4">
-      <MetricStrip summary={summary} />
+      <UsageMetricFamilies summary={summary} />
       <div className="grid grid-cols-[minmax(0,1.55fr)_minmax(300px,0.85fr)_minmax(320px,1fr)] items-start gap-4 max-[1280px]:grid-cols-2 max-[900px]:grid-cols-1">
         <TokenHeatmap summary={summary} />
         <ResetTimeline summary={summary} />
@@ -303,6 +303,7 @@ function SetupSection({
   return (
     <div className="grid grid-cols-[minmax(0,0.95fr)_minmax(320px,0.65fr)] items-start gap-4 max-[900px]:grid-cols-1">
       <div className="space-y-4">
+        <CodexRuntimeSetup dataMode={dataMode} diagnostics={diagnostics.data} />
         <Card>
           <CardHeader>
             <CardTitle>Local data</CardTitle>
@@ -315,7 +316,7 @@ function SetupSection({
             </Button>
           </CardContent>
         </Card>
-        <SetupDiagnosticsCard diagnostics={diagnostics.data} isLoading={diagnostics.isLoading} />
+        <SetupDiagnosticsCard dataMode={dataMode} diagnostics={diagnostics.data} isLoading={diagnostics.isLoading} />
       </div>
       <Card>
         <CardHeader>
@@ -340,10 +341,139 @@ function SetupSection({
   );
 }
 
+type RuntimeNotice = { tone: "success" | "warning" | "muted"; message: string };
+
+function CodexRuntimeSetup({ dataMode, diagnostics }: { dataMode: DataMode; diagnostics?: SetupDiagnostics }) {
+  const runtimes = useCodexRuntimes();
+  const actions = useCodexRuntimeActions(dataMode);
+  const [notice, setNotice] = useState<RuntimeNotice | null>(null);
+  const pending = actions.select.isPending || actions.clear.isPending || actions.test.isPending;
+  const candidates = runtimes.data ?? [];
+
+  const applyRuntime = async (displayPath: string) => {
+    setNotice({ tone: "muted", message: "Validating runtime and app-server connection..." });
+    try {
+      const result = await actions.select.mutateAsync({ displayPath });
+      setNotice(runtimeValidationNotice(result.valid, result.version, result.error));
+    } catch (error) {
+      setNotice({ tone: "warning", message: stagedRuntimeMessage(error) });
+    }
+  };
+  const chooseRuntime = async () => {
+    setNotice({ tone: "muted", message: "Waiting for a runtime selection..." });
+    try {
+      const result = await chooseCodexRuntime();
+      if (result.valid) {
+        await actions.refreshAccount();
+      }
+      setNotice(runtimeValidationNotice(result.valid, result.version, result.error));
+    } catch (error) {
+      setNotice({ tone: "warning", message: stagedRuntimeMessage(error) });
+    }
+  };
+  const clearRuntime = async () => {
+    try {
+      await actions.clear.mutateAsync();
+      setNotice({ tone: "muted", message: "Selection cleared. Automatic discovery is active." });
+    } catch (error) {
+      setNotice({ tone: "warning", message: stagedRuntimeMessage(error) });
+    }
+  };
+  const testConnection = async () => {
+    setNotice({ tone: "muted", message: "Testing app-server connection..." });
+    try {
+      const result = await actions.test.mutateAsync();
+      setNotice(runtimeValidationNotice(result.valid, result.version, result.error));
+    } catch (error) {
+      setNotice({ tone: "warning", message: stagedRuntimeMessage(error) });
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Codex runtime</CardTitle>
+        <Badge tone={diagnostics?.selectedCodexExecutable ? "success" : "muted"}>
+          {diagnostics?.selectedCodexExecutable ? "selected" : "auto-discovery"}
+        </Badge>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={() => void chooseRuntime()} disabled={pending}>Choose runtime</Button>
+          <Button type="button" variant="secondary" onClick={() => void testConnection()} disabled={pending}>Test connection</Button>
+          <Button type="button" variant="secondary" onClick={() => void clearRuntime()} disabled={pending}>Clear selection</Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Choose a native executable when automatic discovery cannot connect. A selection is saved only after the authenticated app-server handshake succeeds.
+        </p>
+        {runtimes.isLoading ? <p className="text-xs text-muted-foreground">Discovering Codex runtimes...</p> : null}
+        {!runtimes.isLoading && candidates.length === 0 ? <p className="text-xs text-muted-foreground">No automatic Codex runtimes found</p> : null}
+        {candidates.length > 0 ? (
+          <ul className="divide-y divide-border" aria-label="Discovered Codex runtimes">
+            {candidates.map((candidate) => {
+              return (
+                <li key={`${candidate.source}-${candidate.displayPath}`} className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                      <span className="truncate font-mono" title={candidate.displayPath}>{candidate.displayPath}</span>
+                      <Badge tone="source">{runtimeSourceLabel(candidate.source)}</Badge>
+                      {candidate.selected ? <Badge tone="success">selected</Badge> : null}
+                      {candidate.configured ? <Badge tone="source">configured</Badge> : null}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {candidate.version ?? candidate.validationError ?? (candidate.exists ? "Validation pending" : "Runtime not found")}
+                    </div>
+                  </div>
+                  <Button type="button" size="sm" variant="secondary" aria-label={`Use ${runtimeSourceLabel(candidate.source)} runtime ${candidate.displayPath}`} disabled={pending || candidate.executable !== true} onClick={() => void applyRuntime(candidate.displayPath)}>
+                    Use
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+        {notice ? <RuntimeStatus notice={notice} /> : null}
+        <div className="grid grid-cols-2 gap-3 text-xs max-[560px]:grid-cols-1">
+          <DiagnosticPath label="Last successful account refresh" value={diagnostics?.lastSuccessfulAccountRefresh ?? "Never"} />
+          <DiagnosticPath label="Displayed account data" value={diagnostics?.firstFailingAccountStage ? `Stale — ${stagedRuntimeMessage(diagnostics.firstFailingAccountStage)}` : diagnostics?.lastSuccessfulAccountRefresh ? "Current" : "Unavailable"} />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RuntimeStatus({ notice }: { notice: RuntimeNotice }) {
+  return <div role={notice.tone === "warning" ? "alert" : "status"} className={cn("rounded-[6px] border px-3 py-2 text-xs", notice.tone === "success" && "border-mint/35 bg-mint/10 text-mint", notice.tone === "warning" && "border-amber/35 bg-amber/10 text-amber", notice.tone === "muted" && "border-border bg-secondary/35 text-muted-foreground")}>{notice.message}</div>;
+}
+
+function runtimeValidationNotice(valid: boolean, version: string | null, error: string | null): RuntimeNotice {
+  return valid
+    ? { tone: "success", message: `Connected${version ? ` — ${version}` : ""}` }
+    : { tone: "warning", message: stagedRuntimeMessage(error ?? "unsupported CLI") };
+}
+
+function stagedRuntimeMessage(value: unknown) {
+  const raw = value instanceof Error ? value.message : String(value);
+  const normalized = raw.toLowerCase();
+  if (normalized.includes("access denied") || normalized.includes("permission denied")) return "Access denied";
+  if (normalized.includes("logged out") || normalized.includes("not logged in") || normalized.includes("auth")) return "Codex is logged out";
+  if (normalized.includes("initialize") && normalized.includes("timeout")) return "App-server initialize timed out";
+  if (normalized.includes("partial") || normalized.includes("method")) return `Connected with method partial failure — ${raw}`;
+  if (normalized.includes("unsupported") || normalized.includes("handshake") || normalized.includes("protocol")) return "Unsupported Codex CLI";
+  if (normalized.includes("not found") || normalized.includes("no configured runtime") || normalized.includes("missing")) return "Codex runtime not found";
+  return raw;
+}
+
+function runtimeSourceLabel(source: CodexRuntimeSource) {
+  return ({ configured: "Selected", environment: "Environment", path: "PATH", codex_app: "Codex App", npm: "npm", standalone: "Standalone", msix: "MSIX" })[source];
+}
+
 function SetupDiagnosticsCard({
+  dataMode,
   diagnostics,
   isLoading,
 }: {
+  dataMode: DataMode;
   diagnostics?: SetupDiagnostics;
   isLoading: boolean;
 }) {
@@ -356,7 +486,7 @@ function SetupDiagnosticsCard({
       return;
     }
     setExportStatus({ tone: "muted", message: "Saving diagnostics..." });
-    const result = await exportSetupDiagnostics(diagnostics);
+    const result = await exportSetupDiagnostics(diagnostics, dataMode);
     if (result.status === "saved") {
       setExportStatus({ tone: "success", message: `Saved to ${result.path}` });
       return;
@@ -490,10 +620,53 @@ function DiagnosticCount({ label, value }: { label: string; value: number }) {
   );
 }
 
-function MetricStrip({ summary }: { summary: DashboardSummary }) {
+function UsageMetricFamilies({ summary }: { summary: DashboardSummary }) {
+  const accountConnector = summary.connectors.find((connector) => connector.id === "account-usage");
+  const showAccount = summary.dataMode !== "local";
+  const showLocal = summary.dataMode !== "remote";
+
   return (
-    <section className="grid grid-cols-5 gap-3 max-[1200px]:grid-cols-3 max-[760px]:grid-cols-1" aria-label="Token metrics">
-      {summary.metrics.map((metric, index) => {
+    <div className="space-y-3">
+      {showAccount ? (
+        summary.accountMetrics.length > 0 ? (
+          <section aria-labelledby="account-usage-heading">
+            <div className="mb-2 flex items-center gap-2">
+              <h2 id="account-usage-heading" className="text-sm font-semibold">Account usage</h2>
+              {accountConnector?.freshness === "stale" ? <Badge tone="warning">Stale account snapshot</Badge> : null}
+            </div>
+            <MetricCards metrics={summary.accountMetrics} ariaLabel="Account usage metrics" />
+          </section>
+        ) : (
+          <Card role="status">
+            <CardHeader><CardTitle>Account usage unavailable</CardTitle></CardHeader>
+            <CardContent className="text-sm text-muted-foreground">{accountConnector?.detail ?? "No account usage snapshot is available."}</CardContent>
+          </Card>
+        )
+      ) : null}
+      {showLocal ? (
+        summary.localMetrics.length > 0 ? (
+          <section aria-labelledby="local-history-heading">
+            <div className="mb-2">
+              <h2 id="local-history-heading" className="text-sm font-semibold">Local history</h2>
+              <p className="mt-1 text-xs text-muted-foreground">Local token history from this device; not account-wide usage.</p>
+            </div>
+            <MetricCards metrics={summary.localMetrics} ariaLabel="Local history metrics" />
+          </section>
+        ) : (
+          <Card role="status">
+            <CardHeader><CardTitle>Local history unavailable</CardTitle></CardHeader>
+            <CardContent className="text-sm text-muted-foreground">No local token history has been imported from this device.</CardContent>
+          </Card>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+function MetricCards({ metrics, ariaLabel }: { metrics: DashboardSummary["metrics"]; ariaLabel: string }) {
+  return (
+    <div className="grid grid-cols-4 gap-3 max-[1200px]:grid-cols-3 max-[760px]:grid-cols-1" aria-label={ariaLabel}>
+      {metrics.map((metric, index) => {
         const Icon = metricIcons[index] ?? Activity;
         return (
           <Card key={metric.key} className="min-h-[104px]">
@@ -512,7 +685,7 @@ function MetricStrip({ summary }: { summary: DashboardSummary }) {
           </Card>
         );
       })}
-    </section>
+    </div>
   );
 }
 

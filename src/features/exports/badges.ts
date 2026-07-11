@@ -37,10 +37,15 @@ export async function loadBadgeLogo(src: string): Promise<HTMLImageElement> {
 }
 
 export function buildBadgeLayoutModel(summary: DashboardSummary, layout: BadgeLayoutId): BadgeLayoutModel {
-  const lifetime = getMetric(summary, "lifetime");
-  const today = getMetric(summary, "today");
-  const month = getMetric(summary, "month");
-  const peak = getMetric(summary, "peak");
+  const accountLifetime = getFamilyMetric(summary.accountMetrics, "account-lifetime");
+  const localLifetime = getFamilyMetric(summary.localMetrics, "local-lifetime");
+  const usesAccount = summary.accountMetrics.length > 0;
+  const family = usesAccount ? "Account" : "Local";
+  const primaryMetrics = usesAccount ? summary.accountMetrics : summary.localMetrics;
+  const lifetime = usesAccount ? accountLifetime : localLifetime;
+  const today = getFamilyMetric(primaryMetrics, usesAccount ? "account-today" : "local-today");
+  const month = getFamilyMetric(primaryMetrics, usesAccount ? "account-month" : "local-month");
+  const peak = getFamilyMetric(primaryMetrics, usesAccount ? "account-peak" : "local-peak");
   const reset = getMetric(summary, "reset");
   const coverage = `${averageCoverage(summary)}%`;
   const year = new Date(summary.generatedAtUtc).getUTCFullYear();
@@ -50,12 +55,12 @@ export function buildBadgeLayoutModel(summary: DashboardSummary, layout: BadgeLa
     return {
       layout,
       brand: "TokenStack",
-      label: "Monthly output",
+      label: `${family} monthly output`,
       heroValue: month.value,
-      heroLabel: "tokens this month",
+      heroLabel: `${family} tokens this month`,
       stats: [
-        { label: "Peak session", value: peak.value },
-        { label: "Month delta", value: month.delta },
+        { label: `${family} today`, value: today.value },
+        ...(peak.value !== "Unavailable" ? [{ label: `${family} peak session`, value: peak.value }] : []),
         { label: "Coverage", value: coverage },
       ],
       sparkline,
@@ -69,13 +74,18 @@ export function buildBadgeLayoutModel(summary: DashboardSummary, layout: BadgeLa
       brand: "TokenStack",
       label: "Usage profile",
       heroValue: lifetime.value,
-      heroLabel: "lifetime tokens",
+      heroLabel: `${family} lifetime tokens`,
       stats: [
-        { label: "This month", value: month.value },
-        { label: "Today", value: today.value },
-        { label: "Reset credits", value: reset.value },
+        ...(accountLifetime.value !== "Unavailable" && localLifetime.value !== "Unavailable"
+          ? [
+              { label: "Account lifetime", value: accountLifetime.value },
+              { label: "Local lifetime", value: localLifetime.value },
+            ]
+          : []),
+        { label: `${family} this month`, value: month.value },
+        { label: `${family} today`, value: today.value },
+        { label: "Account reset credits", value: reset.value },
         { label: "Coverage", value: coverage },
-        { label: "Peak session", value: peak.value },
         { label: "Timezone", value: summary.timezone },
       ],
       sparkline,
@@ -88,10 +98,10 @@ export function buildBadgeLayoutModel(summary: DashboardSummary, layout: BadgeLa
     brand: "TokenStack",
     label: "Usage badge",
     heroValue: lifetime.value,
-    heroLabel: "lifetime tokens",
+    heroLabel: `${family} lifetime tokens`,
     stats: [
-      { label: "Today", value: today.value },
-      { label: "Reset credits", value: reset.value },
+      { label: `${family} today`, value: today.value },
+      { label: "Account reset credits", value: reset.value },
       { label: "Timezone", value: summary.timezone },
     ],
     sparkline: [],
@@ -123,6 +133,10 @@ function getMetric(summary: DashboardSummary, key: string) {
     return { value: "0", delta: "Unavailable" };
   }
   return metric;
+}
+
+function getFamilyMetric(metrics: DashboardSummary["metrics"], key: string) {
+  return metrics.find((item) => item.key === key) ?? { value: "Unavailable", delta: "Unavailable" };
 }
 
 function averageCoverage(summary: DashboardSummary): number {

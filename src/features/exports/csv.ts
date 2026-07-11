@@ -17,8 +17,12 @@ export function buildDashboardUsageCsv(summary: DashboardSummary, generatedAt = 
     ),
     buildSection(
       "metrics",
-      ["metric_key", "label", "value", "delta", "status", "coverage_percent", "confidence", "source_kind"],
-      summary.metrics.map((metric) => [
+      ["source_family", "metric_key", "label", "value", "delta", "status", "coverage_percent", "confidence", "source_kind"],
+      [
+        ...summary.accountMetrics.map((metric) => ["account", metric] as const),
+        ...summary.localMetrics.map((metric) => ["local_history", metric] as const),
+      ].map(([family, metric]) => [
+        family,
         metric.key,
         metric.label,
         metric.value,

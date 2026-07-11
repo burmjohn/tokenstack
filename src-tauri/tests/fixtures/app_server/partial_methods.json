@@ -1,0 +1,9 @@
+{
+  "account/read": { "account": { "type": "chatgpt", "email": null, "planType": "pro" }, "requiresOpenaiAuth": true },
+  "account/rateLimits/read": {
+    "rateLimits": { "limitId": "codex", "limitName": "Codex", "primary": null, "secondary": null, "credits": null, "individualLimit": null, "planType": null, "rateLimitReachedType": null },
+    "rateLimitsByLimitId": null,
+    "rateLimitResetCredits": null
+  },
+  "account/usage/read": { "summary": { "peakDailyTokens": null }, "dailyUsageBuckets": null }
+}

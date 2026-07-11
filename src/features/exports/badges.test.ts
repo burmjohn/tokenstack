@@ -11,9 +11,9 @@ describe("badge export model", () => {
   });
 
   it.each([
-    ["compact", "Usage badge", "38.1B", ["Today", "Reset credits", "Timezone"]],
-    ["usage", "Monthly output", "3.62B", ["Peak session", "Month delta", "Coverage"]],
-    ["profile", "Usage profile", "38.1B", ["This month", "Today", "Reset credits", "Coverage", "Peak session", "Timezone"]],
+    ["compact", "Usage badge", "38.1B", ["Local today", "Account reset credits", "Timezone"]],
+    ["usage", "Local monthly output", "3.62B", ["Local today", "Local peak session", "Coverage"]],
+    ["profile", "Usage profile", "38.1B", ["Local this month", "Local today", "Account reset credits", "Coverage", "Timezone"]],
   ] as const)("builds %s layout with public copy", (layout, label, heroValue, statLabels) => {
     const model = buildBadgeLayoutModel(createExportFixtureSummary(), layout);
     const copy = JSON.stringify(model);
@@ -35,6 +35,57 @@ describe("badge export model", () => {
     expect(compact.footer).toBe("2026 snapshot");
     expect(usage.sparkline).toHaveLength(24);
     expect(usage.sparkline.some((point) => point > 0)).toBe(true);
+  });
+
+  it("labels account and local metric families in combined exports", () => {
+    const summary = createExportFixtureSummary();
+    summary.accountMetrics = [{ ...summary.metrics[0], key: "account-lifetime", label: "Account lifetime", value: "99B" }];
+    summary.localMetrics = [{ ...summary.metrics[0], key: "local-lifetime", label: "Local lifetime", value: "38.1B" }];
+
+    const model = buildBadgeLayoutModel(summary, "profile");
+
+    expect(model.stats).toEqual(expect.arrayContaining([
+      { label: "Account lifetime", value: "99B" },
+      { label: "Local lifetime", value: "38.1B" },
+    ]));
+  });
+
+  it("keeps combined compact and usage metrics explicitly sourced", () => {
+    const summary = createExportFixtureSummary();
+    summary.accountMetrics = [
+      { ...summary.metrics[0], key: "account-lifetime", value: "99B" },
+      { ...summary.metrics[1], key: "account-today", value: "9B" },
+      { ...summary.metrics[2], key: "account-month", value: "90B" },
+    ];
+
+    const compact = buildBadgeLayoutModel(summary, "compact");
+    const usage = buildBadgeLayoutModel(summary, "usage");
+
+    expect(compact.heroLabel).toBe("Account lifetime tokens");
+    expect(compact.stats[0]).toEqual({ label: "Account today", value: "9B" });
+    expect(usage.heroLabel).toBe("Account tokens this month");
+    expect(usage.stats[0]).toEqual({ label: "Account today", value: "9B" });
+  });
+
+  it("uses account today and month coherently for remote-only badges", () => {
+    const summary = createExportFixtureSummary();
+    summary.dataMode = "remote";
+    summary.localMetrics = [];
+    summary.accountMetrics = [
+      { ...summary.metrics[0], key: "account-lifetime", value: "99B" },
+      { ...summary.metrics[1], key: "account-today", value: "9B" },
+      { ...summary.metrics[2], key: "account-month", value: "90B" },
+    ];
+
+    const profile = buildBadgeLayoutModel(summary, "profile");
+
+    expect(profile.heroValue).toBe("99B");
+    expect(profile.heroLabel).toBe("Account lifetime tokens");
+    expect(profile.stats).toEqual(expect.arrayContaining([
+      { label: "Account today", value: "9B" },
+      { label: "Account this month", value: "90B" },
+    ]));
+    expect(profile.stats.some((stat) => stat.label.startsWith("Local"))).toBe(false);
   });
 
   it("builds required badge filenames", () => {
@@ -117,6 +168,12 @@ function createExportFixtureSummary(): DashboardSummary {
         status: "positive",
         coverage: coverage[1],
       },
+    ],
+    localMetrics: [
+      { key: "local-lifetime", label: "Local lifetime", value: "38.1B", delta: "Imported local history", status: "positive", coverage: coverage[0] },
+      { key: "local-today", label: "Local today", value: "128.7M", delta: "Local day", status: "positive", coverage: coverage[0] },
+      { key: "local-month", label: "Local this month", value: "3.62B", delta: "Local month", status: "positive", coverage: coverage[0] },
+      { key: "local-peak", label: "Local peak session", value: "1.72B", delta: "Local peak", status: "neutral", coverage: coverage[0] },
     ],
     heatmap: summary.heatmap.map((day, index) => {
       const tokens = index < 88 ? 0 : 24_000_000 + ((index * 17) % 86) * 1_000_000;

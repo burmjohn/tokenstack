@@ -20,9 +20,18 @@ pub(crate) fn default_local_history_roots() -> Vec<PathBuf> {
     if let Some(paths) = std::env::var_os("TOKENSTACK_LOCAL_HISTORY_ROOTS") {
         return std::env::split_paths(&paths).collect();
     }
+    if let Some(path) = std::env::var_os("CODEX_HOME") {
+        return codex_home_sources(PathBuf::from(path));
+    }
     let mut roots = Vec::new();
     for home in default_user_homes() {
-        push_codex_history_roots(&mut roots, home.join(".codex"));
+        let codex_home = home.join(".codex");
+        for source in codex_home_sources(codex_home.clone()) {
+            push_unique(&mut roots, source);
+        }
+        for legacy in ["history", "archive"] {
+            push_unique(&mut roots, codex_home.join(legacy));
+        }
     }
     for key in ["APPDATA", "LOCALAPPDATA"] {
         if let Some(path) = std::env::var_os(key) {
@@ -30,6 +39,15 @@ pub(crate) fn default_local_history_roots() -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+fn codex_home_sources(base: PathBuf) -> Vec<PathBuf> {
+    vec![
+        base.join("sessions"),
+        base.join("archived_sessions"),
+        base.join("history.jsonl"),
+        base.join("state_5.sqlite"),
+    ]
 }
 
 pub(crate) fn default_auth_home() -> PathBuf {
@@ -105,11 +123,16 @@ mod tests {
     #[test]
     fn local_history_roots_use_userprofile_when_home_is_missing() {
         let _lock = env_lock();
-        let _restore =
-            EnvRestore::capture(&["HOME", "USERPROFILE", "TOKENSTACK_LOCAL_HISTORY_ROOTS"]);
+        let _restore = EnvRestore::capture(&[
+            "HOME",
+            "USERPROFILE",
+            "CODEX_HOME",
+            "TOKENSTACK_LOCAL_HISTORY_ROOTS",
+        ]);
         let profile = tempdir().unwrap();
 
         std::env::remove_var("HOME");
+        std::env::remove_var("CODEX_HOME");
         std::env::remove_var("TOKENSTACK_LOCAL_HISTORY_ROOTS");
         std::env::set_var("USERPROFILE", profile.path());
 
@@ -123,17 +146,51 @@ mod tests {
     #[test]
     fn local_history_roots_include_current_codex_archived_sessions_directory() {
         let _lock = env_lock();
-        let _restore =
-            EnvRestore::capture(&["HOME", "USERPROFILE", "TOKENSTACK_LOCAL_HISTORY_ROOTS"]);
+        let _restore = EnvRestore::capture(&[
+            "HOME",
+            "USERPROFILE",
+            "CODEX_HOME",
+            "TOKENSTACK_LOCAL_HISTORY_ROOTS",
+        ]);
         let profile = tempdir().unwrap();
 
         std::env::remove_var("HOME");
+        std::env::remove_var("CODEX_HOME");
         std::env::remove_var("TOKENSTACK_LOCAL_HISTORY_ROOTS");
         std::env::set_var("USERPROFILE", profile.path());
 
         let roots = default_local_history_roots();
 
         assert!(roots.contains(&profile.path().join(".codex").join("archived_sessions")));
+    }
+
+    #[test]
+    fn local_history_roots_prefer_explicit_codex_home_and_include_bounded_sources() {
+        let _lock = env_lock();
+        let _restore = EnvRestore::capture(&[
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "CODEX_HOME",
+            "TOKENSTACK_LOCAL_HISTORY_ROOTS",
+        ]);
+        let codex_home = tempdir().unwrap();
+
+        std::env::remove_var("TOKENSTACK_LOCAL_HISTORY_ROOTS");
+        std::env::set_var("CODEX_HOME", codex_home.path());
+
+        let roots = default_local_history_roots();
+
+        assert_eq!(
+            roots,
+            vec![
+                codex_home.path().join("sessions"),
+                codex_home.path().join("archived_sessions"),
+                codex_home.path().join("history.jsonl"),
+                codex_home.path().join("state_5.sqlite"),
+            ]
+        );
     }
 
     #[test]
@@ -144,6 +201,7 @@ mod tests {
             "USERPROFILE",
             "APPDATA",
             "LOCALAPPDATA",
+            "CODEX_HOME",
             "TOKENSTACK_LOCAL_HISTORY_ROOTS",
         ]);
         let profile = tempdir().unwrap();
@@ -151,6 +209,7 @@ mod tests {
         let local_appdata = tempdir().unwrap();
 
         std::env::remove_var("HOME");
+        std::env::remove_var("CODEX_HOME");
         std::env::remove_var("TOKENSTACK_LOCAL_HISTORY_ROOTS");
         std::env::set_var("USERPROFILE", profile.path());
         std::env::set_var("APPDATA", appdata.path());
@@ -167,6 +226,9 @@ mod tests {
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }

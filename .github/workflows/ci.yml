@@ -51,10 +51,26 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - run: pnpm install --frozen-lockfile
+      - name: Run Rust tests, including native Codex protocol and discovery
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: pnpm test
       - run: pnpm exec tauri build --target x86_64-pc-windows-msvc
+      - name: Run installed packaged connector smoke
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/TokenStack_*_x64-setup.exe" | Select-Object -First 1
+          pwsh ./scripts/windows-smoke.ps1 -InstallerPath $installer.FullName
       - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: tokenstack-windows-packaged-smoke-diagnostics
+          path: artifacts/windows-packaged-smoke/* diagnostics/tokenstack-diagnostics-*.json
+          if-no-files-found: warn
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: tokenstack-windows-x64-setup
           path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/TokenStack_*_x64-setup.exe
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
