@@ -655,6 +655,9 @@ Pending evidence that must not be treated as passed:
 
 - A real installed Windows environment with authenticated Codex App and
   standalone/npm CLI must complete the manual checklist in `docs/testing.md`.
+  Record the sanitized results in
+  `.omx/evidence/codex-usage-windows-v3/README.md`; the ledger currently marks
+  every authenticated row as pending because no such host is connected.
 
 ## Risks and mitigations
 
