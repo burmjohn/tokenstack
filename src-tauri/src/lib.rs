@@ -116,6 +116,7 @@ pub fn run() {
             commands::export_diagnostics,
             commands::refresh_all,
             commands::save_text_export,
+            commands::save_binary_export,
             commands::list_codex_runtimes,
             commands::select_codex_runtime,
             commands::choose_codex_runtime,

@@ -1,6 +1,7 @@
 use crate::analytics::{build_dashboard_summary, DashboardSummaryDto};
 use crate::codex_app_server::{
-    refresh_account_snapshot, validate_codex_app_server_runtime, CodexAppServerConfig,
+    refresh_account_snapshot, validate_codex_app_server_runtime, AccountConnectorError,
+    AccountConnectorErrorKind, CodexAppServerConfig,
 };
 use crate::codex_runtime::{
     discover_codex_runtimes, discover_codex_runtimes_with, select_codex_runtime as select_runtime,
@@ -420,6 +421,12 @@ pub fn save_text_export(filename: String, contents: String) -> Result<String, St
 }
 
 #[tauri::command]
+pub fn save_binary_export(filename: String, contents: Vec<u8>) -> Result<String, String> {
+    save_export_bytes_to_dir(&filename, &contents, &default_download_dir())
+        .map(|path| path_label(&path))
+}
+
+#[tauri::command]
 pub fn export_diagnostics(data_mode: String) -> Result<String, String> {
     if !matches!(data_mode.as_str(), "local" | "remote" | "combined") {
         return Err("invalid diagnostics data mode".into());
@@ -453,6 +460,20 @@ fn setup_diagnostics_from_parts(
     roots: Vec<PathBuf>,
     auth_home: PathBuf,
 ) -> Result<SetupDiagnosticsDto, String> {
+    setup_diagnostics_from_parts_with_context(
+        app_data_dir,
+        roots,
+        auth_home,
+        &RuntimeDiscoveryContext::from_current_process(),
+    )
+}
+
+fn setup_diagnostics_from_parts_with_context(
+    app_data_dir: PathBuf,
+    roots: Vec<PathBuf>,
+    auth_home: PathBuf,
+    runtime_context: &RuntimeDiscoveryContext,
+) -> Result<SetupDiagnosticsDto, String> {
     let database_path = app_data_dir.join("tokenstack.sqlite3");
     let local_roots = roots.into_iter().map(local_root_diagnostics).collect();
 
@@ -483,11 +504,14 @@ fn setup_diagnostics_from_parts(
     } else {
         None
     };
-    let candidates = discover_codex_runtimes(&CodexRuntimeSettings {
-        configured_runtime: configured_runtime
-            .as_ref()
-            .map(|runtime| runtime.launch.clone()),
-    });
+    let candidates = discover_codex_runtimes_with(
+        &CodexRuntimeSettings {
+            configured_runtime: configured_runtime
+                .as_ref()
+                .map(|runtime| runtime.launch.clone()),
+        },
+        runtime_context,
+    );
     let runtime_candidates = candidates
         .iter()
         .map(|candidate| RuntimeCandidateDiagnosticsDto {
@@ -531,33 +555,22 @@ fn setup_diagnostics_from_parts(
             version: runtime.version.clone(),
         })
         .or_else(|| {
-            latest_selected_runtime
-                .as_ref()
-                .and_then(|(_, selected, _, _)| {
-                    candidates.iter().find(|candidate| {
-                        path_label(&candidate.launch.executable_path) == *selected
-                            || path_label(&candidate.display_path) == *selected
-                    })
-                })
-                .map(|candidate| SelectedRuntimeDiagnosticsDto {
-                    display_path: path_label(&candidate.display_path),
-                    native_executable_path: path_label(&candidate.launch.executable_path),
-                    argv_prefix: candidate.launch.argv_prefix.clone(),
-                    source: candidate.source,
-                    version: candidate
-                        .version
-                        .clone()
-                        .unwrap_or_else(|| "unknown".into()),
-                })
-        })
-        .or_else(|| {
             latest_selected_runtime.map(|(display, native, argv_prefix, source)| {
+                let version = candidates
+                    .iter()
+                    .find(|candidate| {
+                        path_label(&candidate.display_path) == display
+                            && path_label(&candidate.launch.executable_path) == native
+                            && candidate.launch.argv_prefix == argv_prefix
+                    })
+                    .and_then(|candidate| candidate.version.clone())
+                    .unwrap_or_else(|| "unknown".into());
                 SelectedRuntimeDiagnosticsDto {
                     display_path: display,
                     native_executable_path: native,
                     argv_prefix,
                     source,
-                    version: "unknown".into(),
+                    version,
                 }
             })
         });
@@ -688,22 +701,38 @@ fn displayed_metric_diagnostics_for_mode(
     data_mode: &str,
 ) -> rusqlite::Result<Vec<DisplayedMetricDiagnosticsDto>> {
     let summary = build_dashboard_summary(conn, data_mode)?;
+    let connector_freshness = summary
+        .connectors
+        .iter()
+        .map(|connector| (connector.id.as_str(), connector.freshness.as_str()))
+        .collect::<std::collections::HashMap<_, _>>();
     Ok(summary
         .metrics
         .into_iter()
         .chain(summary.account_metrics)
         .chain(summary.local_metrics)
-        .map(|metric| DisplayedMetricDiagnosticsDto {
-            key: metric.key,
-            source: metric.coverage.source_kind,
-            freshness: if metric.status == "unavailable" {
-                "unavailable".into()
-            } else if metric.status.contains("stale") || metric.status.contains("degraded") {
-                "stale".into()
-            } else {
-                "fresh".into()
-            },
-            status: metric.status,
+        .map(|metric| {
+            let connector_id = match metric.coverage.metric_key.as_str() {
+                "account-usage" => Some("account-usage"),
+                "reset-credits" => Some("known-reset-credit"),
+                "rate-limit-windows" => Some("rate-limit-windows"),
+                "local-usage" | "local-history" => Some("local"),
+                _ => None,
+            };
+            let freshness =
+                if metric.value == "Unavailable" || metric.coverage.confidence == "unavailable" {
+                    "unavailable"
+                } else {
+                    connector_id
+                        .and_then(|id| connector_freshness.get(id).copied())
+                        .unwrap_or("fresh")
+                };
+            DisplayedMetricDiagnosticsDto {
+                key: metric.key,
+                source: metric.coverage.source_kind,
+                freshness: freshness.to_string(),
+                status: metric.status,
+            }
         })
         .collect())
 }
@@ -847,9 +876,16 @@ fn save_text_export_to_dir(
     contents: &str,
     target_dir: &Path,
 ) -> Result<PathBuf, String> {
+    save_export_bytes_to_dir(filename, contents.as_bytes(), target_dir)
+}
+
+fn save_export_bytes_to_dir(
+    filename: &str,
+    contents: &[u8],
+    target_dir: &Path,
+) -> Result<PathBuf, String> {
     validate_export_filename(filename)?;
     std::fs::create_dir_all(target_dir).map_err(|error| error.to_string())?;
-    let target_path = target_dir.join(filename);
     let sequence = EXPORT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp_path = target_dir.join(format!(
         ".{filename}.{}.{}.tmp",
@@ -868,25 +904,53 @@ fn save_text_export_to_dir(
                     path_label(&temp_path)
                 )
             })?;
-        file.write_all(contents.as_bytes())
+        file.write_all(contents)
             .and_then(|_| file.sync_all())
             .map_err(|error| {
                 let _ = std::fs::remove_file(&temp_path);
                 format!(
-                    "could not write diagnostics file {}: {error}",
-                    path_label(&target_path)
+                    "could not write export temporary file {}: {error}",
+                    path_label(&temp_path)
                 )
             })?;
     }
-    std::fs::hard_link(&temp_path, &target_path).map_err(|error| {
+    let filename_path = Path::new(filename);
+    let stem = filename_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "invalid export filename".to_string())?;
+    let extension = filename_path.extension().and_then(|value| value.to_str());
+    let mut saved_path = None;
+    for suffix in 0..10_000 {
+        let candidate_name = if suffix == 0 {
+            filename.to_string()
+        } else if let Some(extension) = extension {
+            format!("{stem}-{suffix}.{extension}")
+        } else {
+            format!("{stem}-{suffix}")
+        };
+        let candidate = target_dir.join(candidate_name);
+        match std::fs::hard_link(&temp_path, &candidate) {
+            Ok(()) => {
+                saved_path = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(format!(
+                    "could not finalize export file {}: {error}",
+                    path_label(&candidate)
+                ));
+            }
+        }
+    }
+    let target_path = saved_path.ok_or_else(|| {
         let _ = std::fs::remove_file(&temp_path);
-        format!(
-            "could not finalize diagnostics file {}: {error}",
-            path_label(&target_path)
-        )
+        "could not allocate a unique export filename".to_string()
     })?;
     std::fs::remove_file(&temp_path)
-        .map_err(|error| format!("could not remove diagnostics temporary file: {error}"))?;
+        .map_err(|error| format!("could not remove export temporary file: {error}"))?;
     Ok(target_path)
 }
 
@@ -920,6 +984,20 @@ fn refresh_all_with_auth_home(
     roots: Vec<PathBuf>,
     _auth_home: PathBuf,
 ) -> Result<DashboardSummaryDto, String> {
+    refresh_all_with_context(
+        data_mode,
+        app_data_dir,
+        roots,
+        &RuntimeDiscoveryContext::from_current_process(),
+    )
+}
+
+fn refresh_all_with_context(
+    data_mode: String,
+    app_data_dir: PathBuf,
+    roots: Vec<PathBuf>,
+    runtime_context: &RuntimeDiscoveryContext,
+) -> Result<DashboardSummaryDto, String> {
     let _refresh_guard = refresh_lock()
         .lock()
         .map_err(|_| "refresh lock is poisoned".to_string())?;
@@ -929,14 +1007,20 @@ fn refresh_all_with_auth_home(
         .import_into(&conn)
         .map_err(|error| error.to_string())?;
     if data_mode != "local" {
-        match refresh_account_snapshot(account_config_from_conn(&conn)?) {
-            Ok(snapshot) => {
-                insert_account_snapshot(&conn, &snapshot).map_err(|error| error.to_string())?;
-            }
-            Err(error) => {
-                insert_account_refresh_error(&conn, &error).map_err(|error| error.to_string())?;
-            }
+        let refresh_result = account_config_from_conn_with_context(&conn, runtime_context)
+            .map_err(|message| {
+                AccountConnectorError::new(
+                    AccountConnectorErrorKind::MissingCli,
+                    "discover",
+                    message,
+                )
+            })
+            .and_then(refresh_account_snapshot);
+        match refresh_result {
+            Ok(snapshot) => insert_account_snapshot(&conn, &snapshot),
+            Err(error) => insert_account_refresh_error(&conn, &error),
         }
+        .map_err(|error| error.to_string())?;
     }
     build_dashboard_summary(&conn, &data_mode).map_err(|error| error.to_string())
 }
@@ -1449,6 +1533,48 @@ mod tests {
     }
 
     #[test]
+    fn combined_refresh_keeps_local_summary_when_runtime_discovery_fails() {
+        let app_dir = tempdir().unwrap();
+        let history_dir = tempdir().unwrap();
+        let mut file = fs::File::create(history_dir.path().join("history.jsonl")).unwrap();
+        writeln!(
+            file,
+            r#"{{"id":"degraded-event","type":"token_count","timestamp":"2026-07-18T18:00:00Z","session_id":"s1","usage":{{"total_tokens":654}}}}"#
+        )
+        .unwrap();
+        let context = RuntimeDiscoveryContext::isolated(&[], Vec::new());
+
+        let refreshed = refresh_all_with_context(
+            "combined".to_string(),
+            app_dir.path().to_path_buf(),
+            vec![history_dir.path().to_path_buf()],
+            &context,
+        )
+        .unwrap();
+
+        assert_eq!(refreshed.metrics[0].value, "654");
+        assert_eq!(
+            refreshed
+                .connectors
+                .iter()
+                .find(|connector| connector.id == "account-usage")
+                .unwrap()
+                .status,
+            "degraded"
+        );
+        let conn = open_app_database(app_dir.path()).unwrap();
+        let (status, stage): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, first_failing_stage FROM account_refresh_runs ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "unavailable");
+        assert_eq!(stage.as_deref(), Some("discover"));
+    }
+
+    #[test]
     fn backend_refresh_lock_blocks_concurrent_refreshes() {
         let guard = refresh_lock().lock().unwrap();
         let started = Arc::new(AtomicBool::new(false));
@@ -1608,6 +1734,43 @@ mod tests {
     }
 
     #[test]
+    fn repeated_and_binary_exports_use_unique_files_without_overwriting() {
+        let target_dir = tempdir().unwrap();
+        let filename = "tokenstack-usage-2026-07-18.csv";
+
+        let first = save_text_export_to_dir(filename, "first", target_dir.path()).unwrap();
+        let second = save_text_export_to_dir(filename, "second", target_dir.path()).unwrap();
+        let binary = save_export_bytes_to_dir(
+            "tokenstack-badge-2026-07-18.png",
+            &[137, 80, 78, 71],
+            target_dir.path(),
+        )
+        .unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(first.file_name().unwrap(), filename);
+        assert_eq!(
+            second.file_name().unwrap(),
+            "tokenstack-usage-2026-07-18-1.csv"
+        );
+        assert_eq!(fs::read_to_string(first).unwrap(), "first");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second");
+        assert_eq!(fs::read(binary).unwrap(), [137, 80, 78, 71]);
+    }
+
+    #[test]
+    fn displayed_metric_freshness_uses_coverage_instead_of_presentation_status() {
+        let conn = crate::db::open_memory().unwrap();
+
+        let metrics = displayed_metric_diagnostics_for_mode(&conn, "remote").unwrap();
+
+        assert!(!metrics.is_empty());
+        assert!(metrics
+            .iter()
+            .all(|metric| metric.freshness == "unavailable"));
+    }
+
+    #[test]
     fn save_text_export_rejects_path_traversal_filenames() {
         let target_dir = tempdir().unwrap();
 
@@ -1739,9 +1902,13 @@ mod tests {
         let conn = open_app_database(dir.path()).unwrap();
         conn.execute("INSERT INTO account_refresh_runs (started_at_utc, completed_at_utc, status, selected_codex_executable, launch_mode, executable_candidates_json, method_statuses_json, argv_prefix_json, runtime_source, runtime_display_path) VALUES ('2026-07-10T00:00:00Z','2026-07-10T00:00:01Z','connected','C:\\Program Files\\nodejs\\node.exe','listen_stdio_no_mcp','[]','[]','[\"C:\\\\Users\\\\Test\\\\codex.js\"]','npm','C:\\Users\\Test\\codex.cmd')", []).unwrap();
         drop(conn);
-        let diagnostics =
-            setup_diagnostics_from_parts(dir.path().to_path_buf(), vec![], dir.path().join("auth"))
-                .unwrap();
+        let diagnostics = setup_diagnostics_from_parts_with_context(
+            dir.path().to_path_buf(),
+            vec![],
+            dir.path().join("auth"),
+            &RuntimeDiscoveryContext::isolated(&[], Vec::new()),
+        )
+        .unwrap();
         let selected = diagnostics.selected_runtime.unwrap();
         assert_eq!(selected.source, CodexRuntimeSource::Npm);
         assert_eq!(

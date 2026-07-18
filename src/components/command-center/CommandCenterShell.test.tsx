@@ -245,6 +245,24 @@ describe("CommandCenterShell", () => {
     expect(runtimeApi.refreshAll).not.toHaveBeenCalled();
   });
 
+  it("disables runtime actions while the native picker is pending", async () => {
+    const user = userEvent.setup();
+    let finishPicker: ((value: { valid: boolean; version: string | null; error: string | null }) => void) | undefined;
+    runtimeApi.chooseCodexRuntime.mockImplementation(() => new Promise((resolve) => {
+      finishPicker = resolve;
+    }));
+    renderShell();
+    await user.click(await screen.findByRole("button", { name: "Setup" }));
+
+    await user.click(screen.getByRole("button", { name: "Choose runtime" }));
+
+    expect(screen.getByRole("button", { name: "Choose runtime" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clear selection" })).toBeDisabled();
+    finishPicker?.({ valid: false, version: null, error: "selection cancelled" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Choose runtime" })).toBeEnabled());
+  });
+
   it("uses an automatic candidate, clears selection, and tests connection", async () => {
     const user = userEvent.setup();
     runtimeApi.listCodexRuntimes.mockResolvedValue([{
@@ -381,6 +399,20 @@ describe("CommandCenterShell", () => {
     }
     expect(blob.type).toBe("text/csv;charset=utf-8");
     await expect(readBlobText(blob)).resolves.toContain("source_coverage");
+    expect(await screen.findByText("Downloaded usage CSV")).toBeInTheDocument();
+  });
+
+  it("switches the heatmap between real daily, weekly, and monthly views", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    await screen.findByRole("img", { name: "Daily token usage heatmap" });
+
+    await user.click(screen.getByRole("tab", { name: "Weekly" }));
+    expect(screen.getByRole("img", { name: "Weekly token usage heatmap" })).toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "Daily token usage heatmap" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Monthly" }));
+    expect(screen.getByRole("img", { name: "Monthly token usage heatmap" })).toBeInTheDocument();
   });
 
   it("selects a badge layout and downloads a PNG from a mocked canvas", async () => {
@@ -406,7 +438,8 @@ describe("CommandCenterShell", () => {
       throw new Error("PNG download did not create a blob.");
     }
     expect(blob.type).toBe("image/png");
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Badge export panel" })).not.toBeInTheDocument());
+    expect(await screen.findByText("Downloaded PNG")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Badge export panel" })).toBeInTheDocument();
   });
 
   it("responds to native desktop menu commands", async () => {

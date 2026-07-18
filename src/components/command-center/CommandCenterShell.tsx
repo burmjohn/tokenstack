@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { useCodexRuntimeActions, useCodexRuntimes, useDashboardSummary, useRefreshAll, useSetupDiagnostics } from "../../features/dashboard/useDashboardSummary";
+import { aggregateHeatmap, heatmapMonthLabels, mondayOffset, type HeatmapRange } from "../../features/dashboard/heatmap";
 import { listenForDesktopMenuCommands } from "../../features/desktop/commands";
 import { installDesktopContextMenu } from "../../features/desktop/contextMenu";
 import { buildDashboardUsageCsv, buildUsageCsvFilename } from "../../features/exports/csv";
@@ -41,6 +42,7 @@ export function CommandCenterShell() {
   const [autoRefreshDelayMs, setAutoRefreshDelayMs] = useState(AUTO_REFRESH_BASE_DELAY_MS);
   const [activeSection, setActiveSection] = useState<NavSection>("dashboard");
   const [isExportPanelOpen, setIsExportPanelOpen] = useState(false);
+  const [exportNotice, setExportNotice] = useState<{ failed: boolean; message: string } | null>(null);
   const query = useDashboardSummary(dataMode);
   const refresh = useRefreshAll(dataMode);
   const refreshPendingRef = useRef(false);
@@ -99,11 +101,14 @@ export function CommandCenterShell() {
   }, [dataMode]);
 
   const summary = query.data;
-  const handleCsvExport = useCallback(() => {
+  const handleCsvExport = useCallback(async () => {
     if (!summary) {
       return;
     }
-    void downloadTextFile(buildUsageCsvFilename(), buildDashboardUsageCsv(summary), "text/csv;charset=utf-8");
+    const result = await downloadTextFile(buildUsageCsvFilename(), buildDashboardUsageCsv(summary), "text/csv;charset=utf-8");
+    setExportNotice(result.status === "failed"
+      ? { failed: true, message: `CSV export failed: ${result.error}` }
+      : { failed: false, message: result.status === "saved" ? `Saved to ${result.path}` : "Downloaded usage CSV" });
   }, [summary]);
   const openBadgeExport = useCallback(() => {
     if (summary) {
@@ -173,6 +178,11 @@ export function CommandCenterShell() {
         />
         <main className="desktop-main">
           <DashboardHeader activeSection={activeSection} />
+          {exportNotice ? (
+            <p role={exportNotice.failed ? "alert" : "status"} className={cn("mb-4 rounded-[6px] border px-3 py-2 text-xs", exportNotice.failed ? "border-amber/40 bg-amber/10 text-amber" : "border-mint/40 bg-mint/10 text-mint")}>
+              {exportNotice.message}
+            </p>
+          ) : null}
           {isExportPanelOpen && summary ? <ExportPanel summary={summary} onClose={() => setIsExportPanelOpen(false)} /> : null}
           {summary ? (
             <CommandCenterContent
@@ -347,7 +357,8 @@ function CodexRuntimeSetup({ dataMode, diagnostics }: { dataMode: DataMode; diag
   const runtimes = useCodexRuntimes();
   const actions = useCodexRuntimeActions(dataMode);
   const [notice, setNotice] = useState<RuntimeNotice | null>(null);
-  const pending = actions.select.isPending || actions.clear.isPending || actions.test.isPending;
+  const [isChoosing, setIsChoosing] = useState(false);
+  const pending = isChoosing || actions.select.isPending || actions.clear.isPending || actions.test.isPending;
   const candidates = runtimes.data ?? [];
 
   const applyRuntime = async (displayPath: string) => {
@@ -360,6 +371,10 @@ function CodexRuntimeSetup({ dataMode, diagnostics }: { dataMode: DataMode; diag
     }
   };
   const chooseRuntime = async () => {
+    if (pending) {
+      return;
+    }
+    setIsChoosing(true);
     setNotice({ tone: "muted", message: "Waiting for a runtime selection..." });
     try {
       const result = await chooseCodexRuntime();
@@ -369,6 +384,8 @@ function CodexRuntimeSetup({ dataMode, diagnostics }: { dataMode: DataMode; diag
       setNotice(runtimeValidationNotice(result.valid, result.version, result.error));
     } catch (error) {
       setNotice({ tone: "warning", message: stagedRuntimeMessage(error) });
+    } finally {
+      setIsChoosing(false);
     }
   };
   const clearRuntime = async () => {
@@ -690,12 +707,15 @@ function MetricCards({ metrics, ariaLabel }: { metrics: DashboardSummary["metric
 }
 
 function TokenHeatmap({ summary }: { summary: DashboardSummary }) {
-  const months = ["Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar", "May", "Jun", "Jul"];
+  const [range, setRange] = useState<HeatmapRange>("daily");
+  const months = heatmapMonthLabels(summary.heatmap);
+  const buckets = range === "daily" ? [] : aggregateHeatmap(summary.heatmap, range);
+  const leadingDays = summary.heatmap[0] ? mondayOffset(summary.heatmap[0].date) : 0;
   return (
     <Card className="min-h-[330px]">
       <CardHeader>
         <CardTitle className="inline-flex items-center gap-2">Daily token usage <Info size={15} aria-label="Coverage details available" /></CardTitle>
-        <Tabs defaultValue="daily" aria-label="Usage range">
+        <Tabs value={range} onValueChange={(value) => setRange(value as HeatmapRange)} aria-label="Usage range">
           <TabsList>
             <TabsTrigger value="daily">Daily</TabsTrigger>
             <TabsTrigger value="weekly">Weekly</TabsTrigger>
@@ -704,11 +724,12 @@ function TokenHeatmap({ summary }: { summary: DashboardSummary }) {
         </Tabs>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-[32px_minmax(0,1fr)] gap-3">
+        {range === "daily" ? <div className="grid grid-cols-[32px_minmax(0,1fr)] gap-3">
           <div className="grid grid-rows-7 gap-1 pt-1 text-xs text-muted-foreground">
             {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => <span key={day}>{day}</span>)}
           </div>
           <div className="grid grid-flow-col grid-rows-7 gap-1 overflow-hidden" role="img" aria-label="Daily token usage heatmap">
+            {Array.from({ length: leadingDays }, (_, index) => <span key={`leading-${index}`} aria-hidden />)}
             {summary.heatmap.map((day) => (
               <Tooltip key={day.date}>
                 <TooltipTrigger asChild>
@@ -721,10 +742,23 @@ function TokenHeatmap({ summary }: { summary: DashboardSummary }) {
               </Tooltip>
             ))}
           </div>
-        </div>
-        <div className="ml-11 mt-4 flex justify-between text-xs text-muted-foreground">
-          {months.map((month) => <span key={month}>{month}</span>)}
-        </div>
+        </div> : (
+          <div className="flex min-h-[150px] items-end gap-2 overflow-x-auto pb-6" role="img" aria-label={`${range === "weekly" ? "Weekly" : "Monthly"} token usage heatmap`}>
+            {buckets.map((bucket) => (
+              <Tooltip key={bucket.key}>
+                <TooltipTrigger asChild>
+                  <span className={cn("relative min-w-8 flex-1 rounded-t-[4px]", heatmapIntensity(bucket.intensity))} style={{ height: `${Math.max(12, bucket.intensity * 24)}px` }} aria-label={`${bucket.label}: ${bucket.tokens.toLocaleString()} tokens`}>
+                    <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 whitespace-nowrap text-[10px] text-muted-foreground">{bucket.label}</span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{bucket.label}: {bucket.tokens.toLocaleString()} tokens</TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+        )}
+        {range === "daily" ? <div className="ml-11 mt-4 flex justify-between text-xs text-muted-foreground">
+          {months.map((month) => <span key={month.key}>{month.label}</span>)}
+        </div> : null}
         <div className="mt-8 flex items-center justify-between text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <span>Less</span>
@@ -743,16 +777,18 @@ function heatmapIntensity(level: number) {
 }
 
 function ResetTimeline({ summary }: { summary: DashboardSummary }) {
+  const availableCredits = summary.resetCredits.filter((credit) => credit.creditCount > 0);
   return (
     <Card className="min-h-[330px]">
       <CardHeader>
         <CardTitle className="inline-flex items-center gap-2">Reset credit timeline <Info size={15} aria-label="Reset credit coverage" /></CardTitle>
       </CardHeader>
       <CardContent>
-        {summary.resetCredits.length > 0 ? (
+        {availableCredits.length > 0 ? (
           <ol className="space-y-5">
-            {summary.resetCredits.map((credit) => {
-              const { date, time } = splitResetDate(credit.expiresAtNy);
+            {availableCredits.map((credit) => {
+              const hasExpiration = credit.expiresAtUtc.length > 0 && credit.expiresAtNy !== "Unavailable";
+              const { date, time } = hasExpiration ? splitResetDate(credit.expiresAtNy) : { date: "Unknown", time: "Expiration unavailable" };
               return (
                 <li key={credit.id} className="grid grid-cols-[26px_34px_minmax(0,1fr)_56px] items-start gap-2">
                   <span className="mt-1 h-3 w-3 rounded-full border-2 border-mint" aria-hidden />
@@ -761,13 +797,13 @@ function ResetTimeline({ summary }: { summary: DashboardSummary }) {
                     <span className="block text-muted-foreground">Expires {date}</span>
                     <span className="text-xs text-muted-foreground">{time}</span>
                   </span>
-                  <Badge tone="success" className="justify-center">{credit.daysRemaining} days</Badge>
+                  <Badge tone={hasExpiration ? "success" : "muted"} className="justify-center">{hasExpiration ? `${credit.daysRemaining} days` : "Unknown"}</Badge>
                 </li>
               );
             })}
           </ol>
         ) : (
-          <p className="text-sm text-muted-foreground">No reset-credit snapshot yet.</p>
+          <p className="text-sm text-muted-foreground">{summary.resetCredits.length > 0 ? "No reset credits available." : "No reset-credit snapshot yet."}</p>
         )}
         <p className="mt-6 text-xs text-muted-foreground">All times in {summary.timezone}</p>
       </CardContent>

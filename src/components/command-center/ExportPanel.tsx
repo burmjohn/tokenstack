@@ -60,12 +60,12 @@ export function ExportPanel({ summary, onClose }: { summary: DashboardSummary; o
     }
 
     renderUsageBadge(canvas, summary, layout, logo);
-    const downloaded = await downloadCanvasPng(buildBadgeFilename(layout), canvas);
-    if (!downloaded) {
-      setWarning("PNG export did not produce an image. Try again.");
+    const result = await downloadCanvasPng(buildBadgeFilename(layout), canvas);
+    if (result.status === "failed") {
+      setWarning(`PNG export failed: ${result.error}`);
       return;
     }
-    onClose();
+    setWarning(result.status === "saved" ? `Saved to ${result.path}` : "Downloaded PNG");
   };
 
   return (
@@ -123,12 +123,15 @@ export function ExportPanel({ summary, onClose }: { summary: DashboardSummary; o
               </dl>
             </div>
             <div className="space-y-3">
-              {warning ? <p className="rounded-[6px] border border-amber/40 bg-amber/10 px-3 py-2 text-xs text-amber">{warning}</p> : null}
+              {warning ? <p role="status" className="rounded-[6px] border border-amber/40 bg-amber/10 px-3 py-2 text-xs text-amber">{warning}</p> : null}
               {logoState === "loading" ? <p className="text-xs text-muted-foreground">Preparing logo...</p> : null}
-              <Button type="button" className="w-full" onClick={handleDownloadPng} disabled={logoState === "loading"} aria-label={`Download PNG for ${selectedLayout} badge`}>
-                <Download size={15} aria-hidden />
-                Download PNG
-              </Button>
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <Button type="button" onClick={handleDownloadPng} disabled={logoState === "loading"} aria-label={`Download PNG for ${selectedLayout} badge`}>
+                  <Download size={15} aria-hidden />
+                  Download PNG
+                </Button>
+                <Button type="button" variant="secondary" onClick={onClose}>Close</Button>
+              </div>
             </div>
           </div>
         </div>

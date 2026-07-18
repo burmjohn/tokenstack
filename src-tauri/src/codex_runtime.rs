@@ -456,20 +456,17 @@ fn validate_codex_runtime_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
     use std::io::Write;
 
+    #[cfg(not(windows))]
     fn executable(path: &Path) {
         let mut file = fs::File::create(path).unwrap();
-        #[cfg(windows)]
-        writeln!(file, "not executable").unwrap();
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            writeln!(file, "#!/bin/sh\necho codex-test").unwrap();
-            let mut permissions = file.metadata().unwrap().permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(path, permissions).unwrap();
-        }
+        use std::os::unix::fs::PermissionsExt;
+        writeln!(file, "#!/bin/sh\necho codex-test").unwrap();
+        let mut permissions = file.metadata().unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
     }
 
     #[test]

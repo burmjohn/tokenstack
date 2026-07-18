@@ -1,7 +1,8 @@
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Utc};
 use chrono_tz::America::New_York;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -577,37 +578,51 @@ fn compact_tokens(value: i64) -> String {
 }
 
 fn heatmap(conn: &Connection) -> rusqlite::Result<Vec<HeatmapDayDto>> {
-    let mut stmt = conn.prepare(
-        "SELECT substr(occurred_at_utc, 1, 10) AS day, SUM(total_tokens) FROM usage_events GROUP BY day ORDER BY day LIMIT 112",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let tokens: i64 = row.get(1)?;
-        Ok(HeatmapDayDto {
-            date: row.get(0)?,
-            weekday: "Mon".to_string(),
-            tokens,
-            intensity: (tokens / 50_000_000).clamp(0, 5),
-        })
-    })?;
-    let mut days: Vec<_> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    while days.len() < 112 {
-        days.push(HeatmapDayDto {
-            date: format!("2026-07-{:02}", (days.len() % 28) + 1),
-            weekday: "Mon".to_string(),
-            tokens: 0,
-            intensity: 0,
-        });
-    }
-    Ok(days)
+    heatmap_at(conn, Utc::now())
 }
 
 fn empty_heatmap() -> Vec<HeatmapDayDto> {
+    calendar_heatmap(Utc::now(), &HashMap::new())
+}
+
+fn heatmap_at(conn: &Connection, now: DateTime<Utc>) -> rusqlite::Result<Vec<HeatmapDayDto>> {
+    let end = now.with_timezone(&New_York).date_naive();
+    let start = end - Duration::days(111);
+    let mut totals = HashMap::<NaiveDate, i64>::new();
+    let mut stmt = conn.prepare(
+        "SELECT occurred_at_utc, total_tokens FROM usage_events ORDER BY occurred_at_utc",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (occurred_at_utc, tokens) = row?;
+        let occurred = parse_db_utc(&occurred_at_utc, 0)?;
+        let date = occurred.with_timezone(&New_York).date_naive();
+        if (start..=end).contains(&date) {
+            *totals.entry(date).or_default() += tokens;
+        }
+    }
+    Ok(calendar_heatmap(now, &totals))
+}
+
+fn calendar_heatmap(now: DateTime<Utc>, totals: &HashMap<NaiveDate, i64>) -> Vec<HeatmapDayDto> {
+    let end = now.with_timezone(&New_York).date_naive();
+    let start = end - Duration::days(111);
     (0..112)
-        .map(|index| HeatmapDayDto {
-            date: format!("2026-07-{:02}", (index % 28) + 1),
-            weekday: "Mon".to_string(),
-            tokens: 0,
-            intensity: 0,
+        .map(|offset| {
+            let date = start + Duration::days(offset);
+            let tokens = totals.get(&date).copied().unwrap_or_default();
+            HeatmapDayDto {
+                date: date.format("%Y-%m-%d").to_string(),
+                weekday: date.format("%a").to_string(),
+                tokens,
+                intensity: if tokens == 0 {
+                    0
+                } else {
+                    (tokens / 50_000_000 + 1).clamp(1, 5)
+                },
+            }
         })
         .collect()
 }
@@ -799,7 +814,19 @@ fn load_reset_credits(conn: &Connection) -> rusqlite::Result<Vec<LoadedResetCred
     };
     conn.query_row(
         r#"
-        SELECT r.id, r.available_count, r.expires_at_utc, a.completed_at_utc
+        SELECT r.id, r.available_count,
+               COALESCE(
+                 r.expires_at_utc,
+                 (
+                   SELECT MIN(d.expires_at_utc)
+                   FROM account_reset_credit_details d
+                   WHERE d.reset_credit_snapshot_id = r.id
+                     AND d.status = 'available'
+                     AND d.expires_at_utc IS NOT NULL
+                     AND d.expires_at_utc > a.completed_at_utc
+                 )
+               ),
+               a.completed_at_utc
         FROM account_reset_credit_snapshots r
         JOIN account_refresh_runs a ON a.id = r.refresh_run_id
         WHERE r.refresh_run_id = ?1
@@ -1342,16 +1369,28 @@ fn load_rate_limit_windows(conn: &Connection) -> rusqlite::Result<Vec<RateLimitW
 
 fn next_reset(reset_credits: &[ResetCreditDto]) -> NextResetDto {
     reset_credits
-        .first()
+        .iter()
+        .filter(|credit| credit.credit_count > 0 && !credit.expires_at_utc.is_empty())
+        .min_by(|left, right| left.expires_at_utc.cmp(&right.expires_at_utc))
         .map(|credit| NextResetDto {
             label: format!("{}d remaining", credit.days_remaining),
             expires_at_ny: credit.expires_at_ny.clone(),
             timezone: "America/New_York".to_string(),
         })
-        .unwrap_or_else(|| NextResetDto {
-            label: "No reset-credit snapshot".to_string(),
-            expires_at_ny: "Unavailable".to_string(),
-            timezone: "America/New_York".to_string(),
+        .unwrap_or_else(|| {
+            let has_available_credit = reset_credits.iter().any(|credit| credit.credit_count > 0);
+            NextResetDto {
+                label: if has_available_credit {
+                    "Expiration unavailable"
+                } else if reset_credits.is_empty() {
+                    "No reset-credit snapshot"
+                } else {
+                    "No reset credits available"
+                }
+                .to_string(),
+                expires_at_ny: "Unavailable".to_string(),
+                timezone: "America/New_York".to_string(),
+            }
         })
 }
 
@@ -1544,6 +1583,114 @@ mod tests {
         let conn = seeded_conn();
         let summary = build_dashboard_summary(&conn, "local").unwrap();
         assert_eq!(summary.metrics[0].value, "175");
+    }
+
+    #[test]
+    fn heatmap_uses_the_latest_contiguous_calendar_window_with_real_weekdays() {
+        let conn = open_memory().unwrap();
+        let doc_id =
+            upsert_source_document(&conn, "local", "heatmap", "history.jsonl", "content", 1)
+                .unwrap();
+        for (id, occurred, total) in [
+            ("outside", "2025-12-01T12:00:00Z", 999),
+            ("inside", "2026-07-17T12:00:00Z", 125),
+        ] {
+            insert_usage_event(
+                &conn,
+                &UsageEvent {
+                    event_uid: id.to_string(),
+                    source_document_id: doc_id,
+                    session_uid: id.to_string(),
+                    occurred_at_utc: DateTime::parse_from_rfc3339(occurred)
+                        .unwrap()
+                        .with_timezone(&Utc),
+                    model: None,
+                    mode: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    total_tokens: total,
+                    raw_event_kind: "token_count".to_string(),
+                    confidence: "high".to_string(),
+                },
+            )
+            .unwrap();
+        }
+
+        let days = heatmap_at(&conn, Utc.with_ymd_and_hms(2026, 7, 18, 16, 0, 0).unwrap()).unwrap();
+
+        assert_eq!(days.len(), 112);
+        assert_eq!(days.first().unwrap().date, "2026-03-29");
+        assert_eq!(days.last().unwrap().date, "2026-07-18");
+        assert_eq!(days.first().unwrap().weekday, "Sun");
+        assert_eq!(
+            days.iter()
+                .find(|day| day.date == "2026-07-17")
+                .unwrap()
+                .tokens,
+            125
+        );
+        assert_eq!(
+            days.iter()
+                .map(|day| &day.date)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            112
+        );
+        assert!(!days.iter().any(|day| day.tokens == 999));
+    }
+
+    #[test]
+    fn reset_credit_detail_expiration_is_used_when_aggregate_expiration_is_missing() {
+        let conn = open_memory().unwrap();
+        insert_account_fixture(
+            &conn,
+            Some(100),
+            Some(2),
+            None,
+            AccountRefreshStatus::Connected,
+        );
+        conn.execute(
+            "UPDATE account_reset_credit_snapshots SET expires_at_utc = NULL",
+            [],
+        )
+        .unwrap();
+        let snapshot_id: i64 = conn
+            .query_row("SELECT id FROM account_reset_credit_snapshots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO account_reset_credit_details (reset_credit_snapshot_id, credit_id, reset_type, status, granted_at_utc, expires_at_utc) VALUES (?1, 'detail-1', 'manual', 'available', '2026-07-01T00:00:00Z', '2036-07-28T18:14:00Z')",
+            [snapshot_id],
+        )
+        .unwrap();
+
+        let summary = build_dashboard_summary(&conn, "remote").unwrap();
+
+        assert_eq!(
+            summary.reset_credits[0].expires_at_utc,
+            "2036-07-28T18:14:00+00:00"
+        );
+        assert_ne!(summary.next_reset.expires_at_ny, "Unavailable");
+    }
+
+    #[test]
+    fn zero_reset_credits_do_not_claim_a_zero_day_expiration() {
+        let conn = open_memory().unwrap();
+        insert_account_fixture(
+            &conn,
+            Some(100),
+            Some(0),
+            None,
+            AccountRefreshStatus::Connected,
+        );
+
+        let summary = build_dashboard_summary(&conn, "remote").unwrap();
+
+        assert_eq!(summary.next_reset.label, "No reset credits available");
+        assert_eq!(summary.next_reset.expires_at_ny, "Unavailable");
     }
 
     #[test]

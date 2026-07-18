@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { downloadTextFile } from "./download";
+import { downloadCanvasPng, downloadTextFile } from "./download";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -66,6 +66,35 @@ describe("downloadTextFile", () => {
     expect(anchor?.download).toBe("tokenstack-usage-2026-07-03.csv");
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:tokenstack-export");
     expect(result).toEqual({ status: "downloaded" });
+  });
+
+  it("persists PNG bytes through the native binary export command", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    vi.mocked(invoke).mockResolvedValue("C:\\Users\\burmj\\Downloads\\tokenstack-badge.png");
+    const canvas = {
+      toBlob: (callback: BlobCallback) => callback(new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" })),
+    } as HTMLCanvasElement;
+
+    const result = await downloadCanvasPng("tokenstack-badge.png", canvas);
+
+    expect(invoke).toHaveBeenCalledWith("save_binary_export", {
+      filename: "tokenstack-badge.png",
+      contents: [137, 80, 78, 71],
+    });
+    expect(result).toEqual({ status: "saved", path: "C:\\Users\\burmj\\Downloads\\tokenstack-badge.png" });
+  });
+
+  it("reports a native PNG persistence failure", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    vi.mocked(invoke).mockRejectedValue(new Error("Downloads is unavailable"));
+    const canvas = {
+      toBlob: (callback: BlobCallback) => callback(new Blob(["png"], { type: "image/png" })),
+    } as HTMLCanvasElement;
+
+    await expect(downloadCanvasPng("tokenstack-badge.png", canvas)).resolves.toEqual({
+      status: "failed",
+      error: "Downloads is unavailable",
+    });
   });
 });
 

@@ -21,17 +21,36 @@ export async function downloadTextFile(filename: string, text: string, type = "t
   return { status: "downloaded" };
 }
 
-export async function downloadCanvasPng(filename: string, canvas: HTMLCanvasElement): Promise<boolean> {
+export async function downloadCanvasPng(filename: string, canvas: HTMLCanvasElement): Promise<TextDownloadResult> {
   const blob = await new Promise<Blob | null>((resolve) => {
     canvas.toBlob(resolve, "image/png");
   });
 
   if (!blob) {
-    return false;
+    return { status: "failed", error: "PNG encoder did not produce an image" };
+  }
+
+  if (isTauriRuntime()) {
+    try {
+      const contents = Array.from(await blobBytes(blob));
+      const path = await invoke<string>("save_binary_export", { filename, contents });
+      return { status: "saved", path };
+    } catch (error) {
+      return { status: "failed", error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   downloadBlob(filename, blob);
-  return true;
+  return { status: "downloaded" };
+}
+
+function blobBytes(blob: Blob) {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read PNG bytes"));
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.readAsArrayBuffer(blob);
+  });
 }
 
 function downloadBlob(filename: string, blob: Blob) {
