@@ -51,7 +51,9 @@ fn codex_home_sources(base: PathBuf) -> Vec<PathBuf> {
 }
 
 pub(crate) fn default_auth_home() -> PathBuf {
-    default_user_home()
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_user_home().join(".codex"))
 }
 
 fn default_user_home() -> PathBuf {

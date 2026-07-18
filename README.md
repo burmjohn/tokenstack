@@ -9,8 +9,8 @@ TokenStack is a local desktop command center for Codex usage, reset-credit visib
 ## What It Shows
 
 - Local Codex usage metrics from imported history.
-- Reset-credit snapshots when available.
-- Rate-limit window snapshots when available.
+- OAuth-backed reset-credit snapshots when available.
+- OAuth-backed session and weekly quota windows when available.
 - Source coverage and confidence for each dashboard metric.
 - PNG badge exports and CSV usage bundles from the validated dashboard summary.
 

@@ -276,7 +276,7 @@ pub fn build_dashboard_summary(
         .map(|credit| credit.dto.clone())
         .collect::<Vec<_>>();
     let latest_reset_run = if data_mode.includes_remote() {
-        latest_account_run(conn)?
+        latest_account_method_run(conn, "account/rateLimits/read")?
     } else {
         None
     };
@@ -291,7 +291,7 @@ pub fn build_dashboard_summary(
         Vec::new()
     };
     let latest_rate_limit_run = if data_mode.includes_remote() {
-        latest_account_run(conn)?
+        latest_account_method_run(conn, "account/rateLimits/read")?
     } else {
         None
     };
@@ -938,6 +938,14 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
         "account/rateLimits/read",
         latest_account_run_id_with_rate_limits(conn)?,
     )?;
+    let reset_is_oauth = latest_account_run_id_with_reset_credits(conn)?
+        .map(|run_id| account_run_is_oauth(conn, run_id))
+        .transpose()?
+        .unwrap_or(false);
+    let rate_is_oauth = latest_account_run_id_with_rate_limits(conn)?
+        .map(|run_id| account_run_is_oauth(conn, run_id))
+        .transpose()?
+        .unwrap_or(false);
 
     Ok(vec![
         ConnectorDto {
@@ -981,7 +989,11 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
             name: "Reset credits".to_string(),
             detail: facet_connector_detail(
                 &reset_freshness,
-                "Latest reset-credit snapshot checked",
+                if reset_is_oauth {
+                    "Latest OAuth reset-credit snapshot checked"
+                } else {
+                    "Latest reset-credit snapshot checked"
+                },
                 "No reset-credit snapshot yet",
             ),
             status: account_connector_status_for_facet(&reset_freshness),
@@ -999,7 +1011,11 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
             name: "Rate-limit windows".to_string(),
             detail: facet_connector_detail(
                 &rate_freshness,
-                "Latest rate-limit window snapshot checked",
+                if rate_is_oauth {
+                    "Latest OAuth quota-window snapshot checked"
+                } else {
+                    "Latest rate-limit window snapshot checked"
+                },
                 "No rate-limit window snapshot yet",
             ),
             status: account_connector_status_for_facet(&rate_freshness),
@@ -1013,6 +1029,14 @@ fn load_connectors(conn: &Connection, data_mode: DataMode) -> rusqlite::Result<V
             age_seconds: rate_freshness.age_seconds,
         },
     ])
+}
+
+fn account_run_is_oauth(conn: &Connection, run_id: i64) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT launch_mode = 'oauth_api' FROM account_refresh_runs WHERE id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )
 }
 
 struct FacetFreshness {
@@ -1203,7 +1227,7 @@ fn no_evidence_timestamp() -> String {
 
 fn connector_status(status: &str) -> String {
     match status {
-        "complete" | "connected" => "connected",
+        "complete" | "connected" | "ok" => "connected",
         "failed" | "degraded" => "degraded",
         _ => "unavailable",
     }
@@ -1225,6 +1249,31 @@ fn latest_account_run(conn: &Connection) -> rusqlite::Result<Option<ConnectorRun
         LIMIT 1
         "#,
         [],
+        |row| {
+            Ok(ConnectorRunRow {
+                started_at_utc: row.get(0)?,
+                completed_at_utc: row.get(1)?,
+                status: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+}
+
+fn latest_account_method_run(
+    conn: &Connection,
+    method: &str,
+) -> rusqlite::Result<Option<ConnectorRunRow>> {
+    conn.query_row(
+        r#"
+        SELECT r.started_at_utc, r.completed_at_utc, m.status
+        FROM account_method_attempts m
+        JOIN account_refresh_runs r ON r.id = m.refresh_run_id
+        WHERE m.method = ?1 OR m.method NOT LIKE 'account/%'
+        ORDER BY m.refresh_run_id DESC, m.id DESC
+        LIMIT 1
+        "#,
+        [method],
         |row| {
             Ok(ConnectorRunRow {
                 started_at_utc: row.get(0)?,

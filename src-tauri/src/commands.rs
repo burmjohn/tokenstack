@@ -3,11 +3,14 @@ use crate::codex_app_server::{
     refresh_account_snapshot, validate_codex_app_server_runtime, AccountConnectorError,
     AccountConnectorErrorKind, CodexAppServerConfig,
 };
+use crate::codex_oauth::{refresh_oauth_snapshot, CodexOAuthConfig, OAuthErrorKind};
 use crate::codex_runtime::{
     discover_codex_runtimes, discover_codex_runtimes_with, select_codex_runtime as select_runtime,
     CodexLaunchSpec, CodexRuntimeSettings, CodexRuntimeSource, RuntimeDiscoveryContext,
 };
-use crate::db::{insert_account_refresh_error, insert_account_snapshot, open_path};
+use crate::db::{
+    insert_account_refresh_error, insert_account_snapshot, insert_connector_run, open_path,
+};
 use crate::discovery::{default_app_data_dir, default_auth_home, default_local_history_roots};
 use crate::importers::LocalHistoryImporter;
 use crate::settings::{
@@ -537,7 +540,7 @@ fn setup_diagnostics_from_parts_with_context(
     let latest_selected_runtime: Option<(String, String, Vec<String>, CodexRuntimeSource)> =
         if database_path.exists() {
             open_path(&database_path).map_err(|error| error.to_string())?.query_row(
-            "SELECT selected_codex_executable, runtime_display_path, argv_prefix_json, runtime_source FROM account_refresh_runs ORDER BY id DESC LIMIT 1", [], |row| {
+            "SELECT selected_codex_executable, runtime_display_path, argv_prefix_json, runtime_source FROM account_refresh_runs WHERE selected_codex_executable IS NOT NULL ORDER BY id DESC LIMIT 1", [], |row| {
                 let native: Option<String> = row.get(0)?; let display: Option<String> = row.get(1)?; let argv: String = row.get(2)?; let source: Option<String> = row.get(3)?;
                 Ok(native.map(|native| (display.unwrap_or_else(|| native.clone()), native, serde_json::from_str(&argv).unwrap_or_default(), runtime_source_from_label(source.as_deref()))))
             }
@@ -655,7 +658,10 @@ fn latest_account_run_diagnostics(
             let timeout_text = format!("{} {}", error_code.as_deref().unwrap_or_default(), error_message).to_lowercase();
             let status: String = row.get(3)?;
             let failing_stage: Option<String> = row.get(7)?;
-            let initialize_status = if failing_stage.as_deref().is_some_and(|stage| stage.contains("initialize")) {
+            let launch_mode: Option<String> = row.get(5)?;
+            let initialize_status = if launch_mode.as_deref() == Some("oauth_api") {
+                "not_applicable"
+            } else if failing_stage.as_deref().is_some_and(|stage| stage.contains("initialize")) {
                 "failed"
             } else if failing_stage.as_deref().is_some_and(|stage| stage.contains("spawn") || stage.contains("resolve") || stage.contains("discover")) {
                 "not_attempted"
@@ -664,14 +670,14 @@ fn latest_account_run_diagnostics(
             } else { "unknown" };
             Ok(AccountRunDiagnosticsDto {
                 status, started_at_utc: started, completed_at_utc: completed, duration_ms,
-                selected_executable: row.get(4)?, launch_mode: row.get(5)?,
+                selected_executable: row.get(4)?, launch_mode: launch_mode.clone(),
                 selected_display_path: row.get(15)?, argv_prefix: serde_json::from_str(&row.get::<_, String>(16)?).unwrap_or_default(), runtime_source: row.get(17)?,
                 launch_attempts: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(6)?).unwrap_or_default(),
                 first_failing_stage: failing_stage, error_code, error_message,
                 exit_code: row.get(12)?, timed_out: row.get::<_, i64>(13)? != 0 || timeout_text.contains("timeout") || timeout_text.contains("timed out"),
                 child_terminated: row.get::<_, Option<i64>>(14)?.map(|value| value != 0), used_last_good_snapshot: row.get::<_, i64>(10)? != 0,
                 method_statuses, schema_fingerprint, account_bucket_ids, daily_bucket_count, reset_credit_count,
-                mcp_disabled: row.get::<_, Option<String>>(5)?.as_deref() == Some("listen_stdio_no_mcp"),
+                mcp_disabled: launch_mode.as_deref() == Some("listen_stdio_no_mcp"),
                 initialize_status: initialize_status.into(),
             })
         },
@@ -982,12 +988,13 @@ fn refresh_all_with_auth_home(
     data_mode: String,
     app_data_dir: PathBuf,
     roots: Vec<PathBuf>,
-    _auth_home: PathBuf,
+    auth_home: PathBuf,
 ) -> Result<DashboardSummaryDto, String> {
     refresh_all_with_context(
         data_mode,
         app_data_dir,
         roots,
+        auth_home,
         &RuntimeDiscoveryContext::from_current_process(),
     )
 }
@@ -996,6 +1003,7 @@ fn refresh_all_with_context(
     data_mode: String,
     app_data_dir: PathBuf,
     roots: Vec<PathBuf>,
+    auth_home: PathBuf,
     runtime_context: &RuntimeDiscoveryContext,
 ) -> Result<DashboardSummaryDto, String> {
     let _refresh_guard = refresh_lock()
@@ -1021,6 +1029,47 @@ fn refresh_all_with_context(
             Err(error) => insert_account_refresh_error(&conn, &error),
         }
         .map_err(|error| error.to_string())?;
+
+        match refresh_oauth_snapshot(&CodexOAuthConfig::production(auth_home)) {
+            Ok(snapshot) => {
+                let oauth_status = if snapshot.status
+                    == crate::codex_app_server::AccountRefreshStatus::Connected
+                {
+                    "connected"
+                } else {
+                    "partial"
+                };
+                let oauth_error_code = snapshot.diagnostics.redacted_error_code.clone();
+                let oauth_error_message = snapshot.diagnostics.redacted_error_message.clone();
+                insert_account_snapshot(&conn, &snapshot).map_err(|error| error.to_string())?;
+                insert_connector_run(
+                    &conn,
+                    "codex-oauth",
+                    oauth_status,
+                    Some("wham/usage"),
+                    Some(200),
+                    oauth_error_code.as_deref(),
+                    (!oauth_error_message.is_empty()).then_some(oauth_error_message.as_str()),
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            Err(error) => {
+                insert_connector_run(
+                    &conn,
+                    "codex-oauth",
+                    if error.kind == OAuthErrorKind::NotConfigured {
+                        "not_configured"
+                    } else {
+                        "failed"
+                    },
+                    Some("wham/usage"),
+                    error.http_status,
+                    Some(error.code()),
+                    Some(&error.public_message),
+                )
+                .map_err(|db_error| db_error.to_string())?;
+            }
+        }
     }
     build_dashboard_summary(&conn, &data_mode).map_err(|error| error.to_string())
 }
@@ -1548,6 +1597,7 @@ mod tests {
             "combined".to_string(),
             app_dir.path().to_path_buf(),
             vec![history_dir.path().to_path_buf()],
+            app_dir.path().join("missing-auth"),
             &context,
         )
         .unwrap();
@@ -1572,6 +1622,15 @@ mod tests {
             .unwrap();
         assert_eq!(status, "unavailable");
         assert_eq!(stage.as_deref(), Some("discover"));
+        let (oauth_status, oauth_code): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, redacted_error_code FROM connector_runs WHERE connector_id = 'codex-oauth' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(oauth_status, "not_configured");
+        assert_eq!(oauth_code.as_deref(), Some("not_configured"));
     }
 
     #[test]

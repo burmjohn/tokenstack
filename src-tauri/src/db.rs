@@ -1,4 +1,6 @@
-use crate::codex_app_server::{AccountConnectorError, AccountMethodSnapshot, AccountSnapshot};
+use crate::codex_app_server::{
+    AccountConnectorError, AccountMethodSnapshot, AccountSnapshot, CodexLaunchMode,
+};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -538,7 +540,6 @@ pub fn record_source_coverage(
     Ok(())
 }
 
-#[cfg(test)]
 pub fn insert_connector_run(
     conn: &Connection,
     connector_id: &str,
@@ -658,7 +659,8 @@ fn insert_account_snapshot_inner(
             started_at_utc: &snapshot.diagnostics.started_at_utc,
             completed_at_utc: &snapshot.diagnostics.completed_at_utc,
             status: snapshot.status.as_str(),
-            selected_codex_executable: Some(&snapshot.launch.selected_executable),
+            selected_codex_executable: (!snapshot.launch.selected_executable.is_empty())
+                .then_some(snapshot.launch.selected_executable.as_str()),
             launch_mode: Some(snapshot.launch.mode.as_str()),
             executable_candidates: &snapshot.launch.candidates,
             first_failing_stage: snapshot.diagnostics.first_failing_stage.as_deref(),
@@ -672,11 +674,19 @@ fn insert_account_snapshot_inner(
             timed_out: false,
             child_terminated: Some(snapshot.diagnostics.child_terminated),
             argv_prefix: &snapshot.launch.argv_prefix,
-            runtime_source: infer_runtime_source(&snapshot.launch.argv_prefix),
-            runtime_display_path: infer_runtime_display(
-                &snapshot.launch.selected_executable,
-                &snapshot.launch.argv_prefix,
-            ),
+            runtime_source: if snapshot.launch.mode == CodexLaunchMode::OAuthApi {
+                Some("oauth")
+            } else {
+                infer_runtime_source(&snapshot.launch.argv_prefix)
+            },
+            runtime_display_path: if snapshot.launch.mode == CodexLaunchMode::OAuthApi {
+                ""
+            } else {
+                infer_runtime_display(
+                    &snapshot.launch.selected_executable,
+                    &snapshot.launch.argv_prefix,
+                )
+            },
         },
     )?;
 

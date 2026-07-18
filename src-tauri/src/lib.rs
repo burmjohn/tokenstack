@@ -2,6 +2,7 @@
 
 mod analytics;
 mod codex_app_server;
+mod codex_oauth;
 pub mod codex_runtime;
 #[cfg(feature = "tauri-app")]
 mod commands;

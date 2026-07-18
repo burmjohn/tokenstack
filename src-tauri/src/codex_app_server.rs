@@ -68,6 +68,7 @@ pub enum CodexLaunchMode {
     RuntimeValidation,
     ListenStdioNoMcp,
     PlainAppServerFallback,
+    OAuthApi,
 }
 
 impl CodexLaunchMode {
@@ -76,6 +77,7 @@ impl CodexLaunchMode {
             Self::RuntimeValidation => "runtime_validation",
             Self::ListenStdioNoMcp => "listen_stdio_no_mcp",
             Self::PlainAppServerFallback => "plain_app_server_fallback",
+            Self::OAuthApi => "oauth_api",
         }
     }
 }
